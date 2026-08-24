@@ -12,7 +12,8 @@ Esta version esta preparada para Codespaces y conexiones inestables:
 - Reintenta automaticamente errores transitorios de Earth Engine.
 - No pierde toda la corrida si Codespaces se desconecta.
 - No modifica ni borra checkpoints existentes al arrancar.
-- Al terminar, genera el CSV final.
+- Valida duplicados, celdas y meses antes de crear el CSV final.
+- Al terminar, genera el CSV final de forma atomica.
 
 IMPORTANTE:
 Los checkpoints son archivos LOCALES del Codespace y no se deben subir a Git.
@@ -43,7 +44,6 @@ CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 MAX_RETRIES = 5
 INITIAL_RETRY_DELAY = 3
 TILE_SCALE = 4
-
 OUTPUT_PATH = "alto_xingu_ingesta_2001_2024.csv"
 
 # ---------------------------------------------------------------
@@ -198,13 +198,28 @@ def load_checkpoint(value_col):
     path = checkpoint_path(value_col)
     if not path.exists():
         return pd.DataFrame()
+
     try:
         df = pd.read_csv(path)
+        required = {"cell_id", "year", "month"}
+        if not required.issubset(df.columns):
+            raise ValueError(f"faltan columnas obligatorias: {required - set(df.columns)}")
+
+        duplicate_keys = df.duplicated(
+            subset=["cell_id", "year", "month"]
+        ).sum()
+        if duplicate_keys:
+            raise ValueError(
+                f"hay {duplicate_keys} filas duplicadas por celda/mes"
+            )
+
         print(f"Checkpoint encontrado: {path} ({len(df):,} filas)")
         return df
     except Exception as exc:
-        print(f"ATENCION: no se pudo leer {path}: {exc}")
-        return pd.DataFrame()
+        raise RuntimeError(
+            f"Checkpoint invalido para {value_col}: {exc}. "
+            "No se sobrescribe automaticamente para evitar perder datos."
+        ) from exc
 
 
 def save_checkpoint(value_col, df, year, month):
@@ -279,7 +294,7 @@ def extract_monthly_variable(get_image_fn, value_col, scale):
     existing = load_checkpoint(value_col)
     completed = set()
 
-    if not existing.empty and {"year", "month"}.issubset(existing.columns):
+    if not existing.empty:
         completed = set(
             zip(existing["year"].astype(int), existing["month"].astype(int))
         )
@@ -309,6 +324,12 @@ def extract_monthly_variable(get_image_fn, value_col, scale):
             lambda: fc_to_records(reduced, value_col),
             f"lectura {description}"
         )
+
+        if len(recs) != n_cells:
+            raise RuntimeError(
+                f"{description}: Earth Engine devolvio {len(recs)} celdas; "
+                f"se esperaban {n_cells}. No se guarda el checkpoint."
+            )
 
         for rec in recs:
             rec["year"] = year
@@ -371,6 +392,11 @@ else:
         "lectura SoilGrids"
     )
 
+    if len(soil_features) != n_cells:
+        raise RuntimeError(
+            f"SoilGrids devolvio {len(soil_features)} celdas; se esperaban {n_cells}."
+        )
+
     soil_records = []
     for feature in soil_features:
         props = feature["properties"]
@@ -403,16 +429,23 @@ df = df.sort_values(["cell_id", "date"]).reset_index(drop=True)
 expected_rows = n_cells * TOTAL_MONTHS
 unique_months = df[["year", "month"]].drop_duplicates().shape[0]
 unique_cells = df["cell_id"].nunique()
+duplicate_keys = df.duplicated(subset=merge_keys).sum()
 
 print(f"Filas finales: {len(df):,}")
 print(f"Celdas unicas: {unique_cells} / {n_cells}")
 print(f"Meses presentes: {unique_months} / {TOTAL_MONTHS}")
+print(f"Duplicados celda/mes: {duplicate_keys}")
 print(f"Filas teoricas esperadas: {expected_rows:,}")
 
 if unique_cells != n_cells or unique_months != TOTAL_MONTHS:
     raise RuntimeError(
         "VALIDACION FALLIDA: faltan celdas o meses. "
         "No se genera el CSV final para evitar presentar una ingesta incompleta como valida."
+    )
+
+if duplicate_keys:
+    raise RuntimeError(
+        f"VALIDACION FALLIDA: existen {duplicate_keys} duplicados celda/mes."
     )
 
 final_tmp = Path(OUTPUT_PATH).with_suffix(".tmp")
