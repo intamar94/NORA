@@ -250,11 +250,11 @@ def run_with_retries(fn, description):
     )
 
 
-def reduce_image_to_grid(image):
+def reduce_image_to_grid(image, scale):
     return image.reduceRegions(
         collection=grid,
         reducer=ee.Reducer.mean(),
-        scale=1000,
+        scale=scale,
         tileScale=TILE_SCALE,
     )
 
@@ -289,7 +289,7 @@ def extract_monthly_variable(get_image_fn, value_col, scale):
     started = time.time()
     processed_this_run = 0
 
-    for i, ts in enumerate(months):
+    for ts in months:
         year, month = int(ts.year), int(ts.month)
         key = (year, month)
 
@@ -302,7 +302,7 @@ def extract_monthly_variable(get_image_fn, value_col, scale):
 
         image = get_image_fn(year, month)
         reduced = run_with_retries(
-            lambda: reduce_image_to_grid(image),
+            lambda: reduce_image_to_grid(image, scale),
             description
         )
         recs = run_with_retries(
@@ -320,8 +320,6 @@ def extract_monthly_variable(get_image_fn, value_col, scale):
         else:
             existing = pd.concat([existing, month_df], ignore_index=True)
 
-        # El checkpoint se escribe inmediatamente: si el proceso muere
-        # despues de este punto, este mes NO se vuelve a ejecutar.
         save_checkpoint(value_col, existing, year, month)
         completed.add(key)
         processed_this_run += 1
@@ -349,7 +347,6 @@ print("\n=== NORA: INGESTA REANUDABLE ALTO XINGU ===")
 print(f"Periodo: {START_YEAR}-{END_YEAR} | meses: {TOTAL_MONTHS} | celdas: {n_cells}")
 print(f"Checkpoints: {CHECKPOINT_DIR.resolve()}")
 
-# Cada variable se puede interrumpir y reanudar independientemente.
 df_ndvi = extract_monthly_variable(get_ndvi_monthly, "ndvi", 1000)
 df_precip = extract_monthly_variable(get_chirps_monthly, "precip_mm", 5000)
 df_temp = extract_monthly_variable(get_era5_monthly, "temp_c", 11132)
@@ -366,12 +363,7 @@ else:
     print("\n>>> SOILGRIDS: extraccion estatica...")
     soil_image = get_soilgrids_image()
     soil_reduced = run_with_retries(
-        lambda: soil_image.reduceRegions(
-            collection=grid,
-            reducer=ee.Reducer.mean(),
-            scale=250,
-            tileScale=TILE_SCALE,
-        ),
+        lambda: reduce_image_to_grid(soil_image, 250),
         "SoilGrids"
     )
     soil_features = run_with_retries(
@@ -382,9 +374,7 @@ else:
     soil_records = []
     for feature in soil_features:
         props = feature["properties"]
-        rec = {
-            "cell_id": props.get("cell_id"),
-        }
+        rec = {"cell_id": props.get("cell_id")}
         for prop in SOIL_PROPS:
             for depth in SOIL_DEPTHS:
                 band = f"{prop}_{depth}_mean"
@@ -410,7 +400,6 @@ df = df.merge(df_soil, on="cell_id", how="left")
 df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
 df = df.sort_values(["cell_id", "date"]).reset_index(drop=True)
 
-# Validaciones basicas antes de declarar exito.
 expected_rows = n_cells * TOTAL_MONTHS
 unique_months = df[["year", "month"]].drop_duplicates().shape[0]
 unique_cells = df["cell_id"].nunique()
@@ -426,7 +415,6 @@ if unique_cells != n_cells or unique_months != TOTAL_MONTHS:
         "No se genera el CSV final para evitar presentar una ingesta incompleta como valida."
     )
 
-# Escritura atomica del resultado final.
 final_tmp = Path(OUTPUT_PATH).with_suffix(".tmp")
 df.to_csv(final_tmp, index=False)
 os.replace(final_tmp, OUTPUT_PATH)
