@@ -1,42 +1,69 @@
 """
-Ingesta de datos multidominio - Cuenca Alto Xingu (Mato Grosso, Brasil)
-Proyecto: IA de descubrimiento cientifico - Earth System
-Bloque 1 de 2: Suelo, Vegetacion, Precipitacion, Temperatura (2001-2024, mensual)
+INGESTA ROBUSTA - Cuenca Alto Xingu (Mato Grosso, Brasil)
+Proyecto NORA - Earth System / descubrimiento cientifico
 
-Sentinel-5P, VIIRS y GRACE quedan para el bloque 2.
+Bloque 1: NDVI, precipitacion, temperatura y SoilGrids.
+Periodo temporal: 2001-2024, mensual.
 
-REQUISITOS:
-    pip install earthengine-api pandas numpy
-    Cuenta de Google Earth Engine activada (https://earthengine.google.com/)
-    Un proyecto de Google Cloud asociado a esa cuenta (obligatorio desde 2024)
-    Ejecutar ee.Authenticate() una vez por maquina (abre navegador)
+Esta version esta preparada para Codespaces y conexiones inestables:
+- Reanuda desde el ultimo mes completado.
+- Guarda un checkpoint CSV despues de CADA mes.
+- Guarda un estado JSON con el ultimo mes procesado.
+- Reintenta automaticamente errores transitorios de Earth Engine.
+- No pierde toda la corrida si Codespaces se desconecta.
+- No modifica ni borra checkpoints existentes al arrancar.
+- Al terminar, genera el CSV final.
 
-NO SE PUDO EJECUTAR NI PROBAR ESTE SCRIPT EN EL ENTORNO DONDE FUE ESCRITO
-(sin acceso a red / sin credenciales GEE). Los IDs de dataset, rangos de
-fechas y unidades fueron verificados contra el catalogo publico de Earth
-Engine (agosto 2026), pero el script en si no fue corrido end-to-end.
-Correlo en tu maquina y revisa la seccion de "red flags" al final del
-mensaje que acompana este archivo antes de confiar en los resultados.
+IMPORTANTE:
+Los checkpoints son archivos LOCALES del Codespace y no se deben subir a Git.
+El AOI sigue siendo un bounding box de piloto, NO el poligono hidrologico
+real de la cuenca. Antes de interpretar resultados cientificos de la cuenca,
+habra que sustituirlo por un poligono HydroSHEDS/ottobacias ANA.
 """
 
-import ee
-import pandas as pd
-import numpy as np
+import json
+import os
 import time
+from pathlib import Path
+
+import ee
+import numpy as np
+import pandas as pd
 
 # ---------------------------------------------------------------
-# 0. INICIALIZACION
+# 0. CONFIGURACION
 # ---------------------------------------------------------------
 PROJECT_ID = "nora-506511"
+START_YEAR = 2001
+END_YEAR = 2024
+CELL_SIZE_DEG = 0.1
+CHECKPOINT_DIR = Path("checkpoints_alto_xingu")
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-try:
-    ee.Initialize(project=PROJECT_ID)
-except Exception:
-    ee.Authenticate()
-    ee.Initialize(project=PROJECT_ID)
+MAX_RETRIES = 5
+INITIAL_RETRY_DELAY = 3
+TILE_SCALE = 4
+
+OUTPUT_PATH = "alto_xingu_ingesta_2001_2024.csv"
 
 # ---------------------------------------------------------------
-# 1. AREA DE ESTUDIO: cuenca Alto Xingu (Mato Grosso, Brasil)
+# 1. EARTH ENGINE
+# ---------------------------------------------------------------
+def initialize_ee():
+    try:
+        ee.Initialize(project=PROJECT_ID)
+        print("Conexion a Earth Engine: OK")
+    except Exception:
+        print("No habia sesion activa; iniciando autenticacion...")
+        ee.Authenticate()
+        ee.Initialize(project=PROJECT_ID)
+        print("Conexion a Earth Engine: OK (tras autenticar)")
+
+
+initialize_ee()
+
+# ---------------------------------------------------------------
+# 2. AREA DE ESTUDIO - PILOTO
 # ---------------------------------------------------------------
 AOI_BOUNDS = {
     "lon_min": -55.2,
@@ -44,50 +71,56 @@ AOI_BOUNDS = {
     "lat_min": -15.2,
     "lat_max": -10.5,
 }
-aoi = ee.Geometry.Rectangle(
-    [AOI_BOUNDS["lon_min"], AOI_BOUNDS["lat_min"],
-     AOI_BOUNDS["lon_max"], AOI_BOUNDS["lat_max"]]
-)
+
+aoi = ee.Geometry.Rectangle([
+    AOI_BOUNDS["lon_min"], AOI_BOUNDS["lat_min"],
+    AOI_BOUNDS["lon_max"], AOI_BOUNDS["lat_max"]
+])
 
 # ---------------------------------------------------------------
-# 2. GRILLA DE ANALISIS
+# 3. GRILLA
 # ---------------------------------------------------------------
-CELL_SIZE_DEG = 0.1
-
-
 def build_grid(bounds, cell_size):
     lons = np.arange(bounds["lon_min"], bounds["lon_max"], cell_size)
     lats = np.arange(bounds["lat_min"], bounds["lat_max"], cell_size)
     features = []
     cell_id = 0
+
     for lon in lons:
         for lat in lats:
-            rect = ee.Geometry.Rectangle(
-                [float(lon), float(lat), float(lon + cell_size), float(lat + cell_size)]
-            )
-            feat = ee.Feature(rect, {
+            rect = ee.Geometry.Rectangle([
+                float(lon), float(lat),
+                float(lon + cell_size), float(lat + cell_size)
+            ])
+            features.append(ee.Feature(rect, {
                 "cell_id": cell_id,
                 "centroid_lon": float(lon + cell_size / 2),
                 "centroid_lat": float(lat + cell_size / 2),
-            })
-            features.append(feat)
+            }))
             cell_id += 1
+
     return ee.FeatureCollection(features)
 
 
 grid = build_grid(AOI_BOUNDS, CELL_SIZE_DEG)
 n_cells = grid.size().getInfo()
-print(f"Grilla construida: {n_cells} celdas de {CELL_SIZE_DEG} grados (~{CELL_SIZE_DEG*111:.0f} km de lado)")
+print(
+    f"Grilla construida: {n_cells} celdas de {CELL_SIZE_DEG} grados "
+    f"(~{CELL_SIZE_DEG * 111:.0f} km de lado)"
+)
 
 # ---------------------------------------------------------------
-# 3. RANGO TEMPORAL
+# 4. PERIODO
 # ---------------------------------------------------------------
-START_YEAR = 2001
-END_YEAR = 2024
-months = pd.date_range(f"{START_YEAR}-01-01", f"{END_YEAR}-12-01", freq="MS")
+months = pd.date_range(
+    f"{START_YEAR}-01-01",
+    f"{END_YEAR}-12-01",
+    freq="MS"
+)
+TOTAL_MONTHS = len(months)
 
 # ---------------------------------------------------------------
-# 4. DATASETS
+# 5. DATASETS
 # ---------------------------------------------------------------
 SOIL_PROPS = ["clay", "sand", "soc", "phh2o"]
 SOIL_DEPTHS = ["0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm"]
@@ -98,65 +131,50 @@ def get_soilgrids_image():
     for prop in SOIL_PROPS:
         img = ee.Image(f"projects/soilgrids-isric/{prop}_mean")
         for depth in SOIL_DEPTHS:
-            band_name = f"{prop}_{depth}_mean"
-            bands.append(img.select(band_name))
+            bands.append(img.select(f"{prop}_{depth}_mean"))
     return ee.Image.cat(bands)
-
-
-soil_image = get_soilgrids_image()
 
 
 def get_ndvi_monthly(year, month):
     start = ee.Date.fromYMD(year, month, 1)
     end = start.advance(1, "month")
-    coll = (ee.ImageCollection("MODIS/061/MOD13A3")
-            .filterDate(start, end)
-            .select("NDVI"))
-    return coll.mean().multiply(0.0001).rename("ndvi")
+    return (
+        ee.ImageCollection("MODIS/061/MOD13A3")
+        .filterDate(start, end)
+        .select("NDVI")
+        .mean()
+        .multiply(0.0001)
+        .rename("ndvi")
+    )
 
 
 def get_chirps_monthly(year, month):
     start = ee.Date.fromYMD(year, month, 1)
     end = start.advance(1, "month")
-    coll = (ee.ImageCollection("UCSB-CHG/CHIRPS/PENTAD")
-            .filterDate(start, end)
-            .select("precipitation"))
-    return coll.sum().rename("precip_mm")
+    return (
+        ee.ImageCollection("UCSB-CHG/CHIRPS/PENTAD")
+        .filterDate(start, end)
+        .select("precipitation")
+        .sum()
+        .rename("precip_mm")
+    )
 
 
 def get_era5_monthly(year, month):
     start = ee.Date.fromYMD(year, month, 1)
     end = start.advance(1, "month")
-    coll = (ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR")
-            .filterDate(start, end)
-            .select("temperature_2m"))
-    return coll.mean().subtract(273.15).rename("temp_c")
-
-# ---------------------------------------------------------------
-# 5. EXTRACCION
-# ---------------------------------------------------------------
-def reduce_image_to_grid(image, grid_fc, scale):
-    return image.reduceRegions(
-        collection=grid_fc,
-        reducer=ee.Reducer.mean(),
-        scale=scale,
+    return (
+        ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR")
+        .filterDate(start, end)
+        .select("temperature_2m")
+        .mean()
+        .subtract(273.15)
+        .rename("temp_c")
     )
 
-
-def fc_to_records(fc, value_col):
-    features = fc.getInfo()["features"]
-    records = []
-    for f in features:
-        props = f["properties"]
-        records.append({
-            "cell_id": props.get("cell_id"),
-            "centroid_lon": props.get("centroid_lon"),
-            "centroid_lat": props.get("centroid_lat"),
-            value_col: props.get("mean"),
-        })
-    return records
-
-
+# ---------------------------------------------------------------
+# 6. UTILIDADES DE ROBUSTEZ
+# ---------------------------------------------------------------
 def format_duration(seconds):
     seconds = max(0, int(seconds))
     hours, rem = divmod(seconds, 3600)
@@ -168,78 +186,223 @@ def format_duration(seconds):
     return f"{secs}s"
 
 
-def extract_monthly_variable(get_image_fn, value_col, scale, months, grid_fc):
-    all_records = []
-    total = len(months)
-    started = time.time()
+def checkpoint_path(value_col):
+    return CHECKPOINT_DIR / f"{value_col}_partial.csv"
 
-    print(f"\n>>> {value_col.upper()}: 0/{total} meses | 0.0%")
+
+def state_path(value_col):
+    return CHECKPOINT_DIR / f"{value_col}_state.json"
+
+
+def load_checkpoint(value_col):
+    path = checkpoint_path(value_col)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(path)
+        print(f"Checkpoint encontrado: {path} ({len(df):,} filas)")
+        return df
+    except Exception as exc:
+        print(f"ATENCION: no se pudo leer {path}: {exc}")
+        return pd.DataFrame()
+
+
+def save_checkpoint(value_col, df, year, month):
+    path = checkpoint_path(value_col)
+    tmp = path.with_suffix(".tmp")
+    df.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+
+    state = {
+        "variable": value_col,
+        "last_year": int(year),
+        "last_month": int(month),
+        "months_completed": int(df[["year", "month"]].drop_duplicates().shape[0]),
+        "rows": int(len(df)),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    state_path(value_col).write_text(
+        json.dumps(state, indent=2),
+        encoding="utf-8"
+    )
+
+
+def run_with_retries(fn, description):
+    delay = INITIAL_RETRY_DELAY
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            last_error = exc
+            if attempt == MAX_RETRIES:
+                break
+            print(
+                f"  Error temporal en {description}. "
+                f"Reintento {attempt}/{MAX_RETRIES - 1} en {delay}s..."
+            )
+            time.sleep(delay)
+            delay *= 2
+
+    raise RuntimeError(
+        f"Fallo definitivo en {description} despues de {MAX_RETRIES} intentos: {last_error}"
+    )
+
+
+def reduce_image_to_grid(image):
+    return image.reduceRegions(
+        collection=grid,
+        reducer=ee.Reducer.mean(),
+        scale=1000,
+        tileScale=TILE_SCALE,
+    )
+
+
+def fc_to_records(fc, value_col):
+    features = fc.getInfo()["features"]
+    records = []
+    for feature in features:
+        props = feature["properties"]
+        records.append({
+            "cell_id": props.get("cell_id"),
+            "centroid_lon": props.get("centroid_lon"),
+            "centroid_lat": props.get("centroid_lat"),
+            value_col: props.get("mean"),
+        })
+    return records
+
+# ---------------------------------------------------------------
+# 7. EXTRACCION TEMPORAL REANUDABLE
+# ---------------------------------------------------------------
+def extract_monthly_variable(get_image_fn, value_col, scale):
+    existing = load_checkpoint(value_col)
+    completed = set()
+
+    if not existing.empty and {"year", "month"}.issubset(existing.columns):
+        completed = set(
+            zip(existing["year"].astype(int), existing["month"].astype(int))
+        )
+
+    print(f"\n>>> {value_col.upper()}: {len(completed)}/{TOTAL_MONTHS} meses ya completados")
+
+    started = time.time()
+    processed_this_run = 0
 
     for i, ts in enumerate(months):
-        year, month = ts.year, ts.month
-        img = get_image_fn(year, month)
-        reduced = reduce_image_to_grid(img, grid_fc, scale)
-        recs = fc_to_records(reduced, value_col)
-        for r in recs:
-            r["year"] = year
-            r["month"] = month
-        all_records.extend(recs)
+        year, month = int(ts.year), int(ts.month)
+        key = (year, month)
 
-        done = i + 1
-        elapsed = time.time() - started
-        rate = done / elapsed if elapsed > 0 else 0
-        remaining = (total - done) / rate if rate > 0 else 0
-        pct = done / total * 100
+        if key in completed:
+            continue
 
-        # Mostrar progreso cada mes. La salida permite seguir el proceso
-        # incluso cuando se ejecuta en un Codespace o terminal remoto.
-        print(
-            f"  {value_col.upper():12s} {done:3d}/{total} "
-            f"| {pct:5.1f}% "
-            f"| {rate:.2f} meses/s "
-            f"| transcurrido {format_duration(elapsed)} "
-            f"| restante ~{format_duration(remaining)}"
+        description = f"{value_col} {year}-{month:02d}"
+        print(f"  Procesando {description}...")
+        month_started = time.time()
+
+        image = get_image_fn(year, month)
+        reduced = run_with_retries(
+            lambda: reduce_image_to_grid(image),
+            description
         )
-        time.sleep(0.2)
+        recs = run_with_retries(
+            lambda: fc_to_records(reduced, value_col),
+            f"lectura {description}"
+        )
 
-    elapsed = time.time() - started
-    print(
-        f"<<< {value_col.upper()}: COMPLETO | {total}/{total} | 100.0% "
-        f"| tiempo {format_duration(elapsed)}\n"
+        for rec in recs:
+            rec["year"] = year
+            rec["month"] = month
+
+        month_df = pd.DataFrame(recs)
+        if existing.empty:
+            existing = month_df
+        else:
+            existing = pd.concat([existing, month_df], ignore_index=True)
+
+        # El checkpoint se escribe inmediatamente: si el proceso muere
+        # despues de este punto, este mes NO se vuelve a ejecutar.
+        save_checkpoint(value_col, existing, year, month)
+        completed.add(key)
+        processed_this_run += 1
+
+        total_completed = len(completed)
+        elapsed = time.time() - started
+        rate = processed_this_run / elapsed if elapsed > 0 else 0
+        remaining = (TOTAL_MONTHS - total_completed) / rate if rate > 0 else 0
+        pct = total_completed / TOTAL_MONTHS * 100
+
+        print(
+            f"    OK | {total_completed:3d}/{TOTAL_MONTHS} | {pct:5.1f}% "
+            f"| mes {format_duration(time.time() - month_started)} "
+            f"| restante aprox. {format_duration(remaining)} "
+            f"| checkpoint guardado"
+        )
+
+    print(f"<<< {value_col.upper()}: COMPLETO | {TOTAL_MONTHS}/{TOTAL_MONTHS} | 100.0%")
+    return existing
+
+# ---------------------------------------------------------------
+# 8. EJECUCION
+# ---------------------------------------------------------------
+print("\n=== NORA: INGESTA REANUDABLE ALTO XINGU ===")
+print(f"Periodo: {START_YEAR}-{END_YEAR} | meses: {TOTAL_MONTHS} | celdas: {n_cells}")
+print(f"Checkpoints: {CHECKPOINT_DIR.resolve()}")
+
+# Cada variable se puede interrumpir y reanudar independientemente.
+df_ndvi = extract_monthly_variable(get_ndvi_monthly, "ndvi", 1000)
+df_precip = extract_monthly_variable(get_chirps_monthly, "precip_mm", 5000)
+df_temp = extract_monthly_variable(get_era5_monthly, "temp_c", 11132)
+
+# ---------------------------------------------------------------
+# 9. SOILGRIDS ESTATICO, TAMBIEN REANUDABLE
+# ---------------------------------------------------------------
+soil_checkpoint = CHECKPOINT_DIR / "soilgrids.csv"
+
+if soil_checkpoint.exists():
+    print("SoilGrids: checkpoint encontrado; reutilizando datos existentes.")
+    df_soil = pd.read_csv(soil_checkpoint)
+else:
+    print("\n>>> SOILGRIDS: extraccion estatica...")
+    soil_image = get_soilgrids_image()
+    soil_reduced = run_with_retries(
+        lambda: soil_image.reduceRegions(
+            collection=grid,
+            reducer=ee.Reducer.mean(),
+            scale=250,
+            tileScale=TILE_SCALE,
+        ),
+        "SoilGrids"
     )
-    return pd.DataFrame(all_records)
+    soil_features = run_with_retries(
+        lambda: soil_reduced.getInfo()["features"],
+        "lectura SoilGrids"
+    )
 
+    soil_records = []
+    for feature in soil_features:
+        props = feature["properties"]
+        rec = {
+            "cell_id": props.get("cell_id"),
+        }
+        for prop in SOIL_PROPS:
+            for depth in SOIL_DEPTHS:
+                band = f"{prop}_{depth}_mean"
+                rec[band] = props.get(band)
+        soil_records.append(rec)
 
-print("Extrayendo NDVI (MOD13A3, escala 1000m)...")
-df_ndvi = extract_monthly_variable(get_ndvi_monthly, "ndvi", 1000, months, grid)
-
-print("Extrayendo precipitacion (CHIRPS, escala 5000m)...")
-df_precip = extract_monthly_variable(get_chirps_monthly, "precip_mm", 5000, months, grid)
-
-print("Extrayendo temperatura (ERA5-Land, escala 11132m)...")
-df_temp = extract_monthly_variable(get_era5_monthly, "temp_c", 11132, months, grid)
-
-print("Extrayendo SoilGrids (estatico, escala 250m)...")
-soil_started = time.time()
-soil_reduced = reduce_image_to_grid(soil_image, grid, 250)
-soil_features = soil_reduced.getInfo()["features"]
-soil_records = []
-for f in soil_features:
-    props = f["properties"]
-    rec = {"cell_id": props.get("cell_id")}
-    for prop in SOIL_PROPS:
-        for depth in SOIL_DEPTHS:
-            band = f"{prop}_{depth}_mean"
-            rec[band] = props.get(band)
-    soil_records.append(rec)
-print(f"SoilGrids: COMPLETO | tiempo {format_duration(time.time() - soil_started)}")
-df_soil = pd.DataFrame(soil_records)
+    df_soil = pd.DataFrame(soil_records)
+    tmp = soil_checkpoint.with_suffix(".tmp")
+    df_soil.to_csv(tmp, index=False)
+    os.replace(tmp, soil_checkpoint)
+    print(f"SoilGrids: COMPLETO | {len(df_soil)} celdas | checkpoint guardado")
 
 # ---------------------------------------------------------------
-# 6. MERGE FINAL
+# 10. FUSION FINAL
 # ---------------------------------------------------------------
-print("\n>>> Fusionando variables...")
+print("\n>>> Fusionando checkpoints...")
 merge_keys = ["cell_id", "centroid_lon", "centroid_lat", "year", "month"]
+
 df = df_ndvi.merge(df_precip, on=merge_keys, how="outer")
 df = df.merge(df_temp, on=merge_keys, how="outer")
 df = df.merge(df_soil, on="cell_id", how="left")
@@ -247,12 +410,26 @@ df = df.merge(df_soil, on="cell_id", how="left")
 df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
 df = df.sort_values(["cell_id", "date"]).reset_index(drop=True)
 
-# ---------------------------------------------------------------
-# 7. EXPORT
-# ---------------------------------------------------------------
-OUTPUT_PATH = "alto_xingu_ingesta_2001_2024.csv"
-df.to_csv(OUTPUT_PATH, index=False)
+# Validaciones basicas antes de declarar exito.
+expected_rows = n_cells * TOTAL_MONTHS
+unique_months = df[["year", "month"]].drop_duplicates().shape[0]
+unique_cells = df["cell_id"].nunique()
+
+print(f"Filas finales: {len(df):,}")
+print(f"Celdas unicas: {unique_cells} / {n_cells}")
+print(f"Meses presentes: {unique_months} / {TOTAL_MONTHS}")
+print(f"Filas teoricas esperadas: {expected_rows:,}")
+
+if unique_cells != n_cells or unique_months != TOTAL_MONTHS:
+    raise RuntimeError(
+        "VALIDACION FALLIDA: faltan celdas o meses. "
+        "No se genera el CSV final para evitar presentar una ingesta incompleta como valida."
+    )
+
+# Escritura atomica del resultado final.
+final_tmp = Path(OUTPUT_PATH).with_suffix(".tmp")
+df.to_csv(final_tmp, index=False)
+os.replace(final_tmp, OUTPUT_PATH)
+
 print(f"Guardado: {OUTPUT_PATH}")
-print(f"Filas: {len(df)} | Celdas unicas: {df['cell_id'].nunique()} | Meses esperados: {len(months)}")
-print(f"Filas esperadas (celdas x meses): {n_cells * len(months)}")
-print("\n=== INGESTA ALTO XINGU FINALIZADA ===")
+print("\n=== INGESTA ALTO XINGU FINALIZADA Y VALIDADA ===")
