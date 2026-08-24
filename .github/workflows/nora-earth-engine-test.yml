@@ -1,0 +1,45 @@
+name: Prueba Mínima Earth Engine
+
+on:
+  # Disparo manual desde la pestaña Actions
+  workflow_dispatch: {}
+
+jobs:
+  test_ingesta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install earthengine-api pandas numpy supabase
+
+      - name: Ejecutar prueba mínima (25 celdas, 1 mes)
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python prueba_minima_ingesta.py
+
+      - name: Resumen
+        if: success()
+        run: |
+          echo "✅ Prueba completada exitosamente"
+          echo "Verifica en la consola arriba:"
+          echo "  - NDVI: valores entre -1 y 1"
+          echo "  - Precipitación: mm acumulados en enero"
+          echo "  - Temperatura: °C"
+          echo "  - SoilGrids: nombres de banda reales"
+
+      - name: Error en prueba
+        if: failure()
+        run: |
+          echo "❌ La prueba falló. Revisa el log arriba para detalles."
+          exit 1
