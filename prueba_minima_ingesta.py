@@ -2,47 +2,46 @@
 PRUEBA MINIMA - Ingesta Alto Xingu
 Proyecto NORA (Earth System)
 
-Objetivo de este script: NO es generar datos utiles todavia. Es confirmar
-que la conexion a Earth Engine funciona, que los 4 datasets responden, y
-que los supuestos sin verificar (sobre todo los nombres de banda de
-SoilGrids) son correctos -- ANTES de lanzar la corrida completa de
-24 anios x ~1.500 celdas del script "ingesta_alto_xingu.py".
-
-Que hace distinto de la version completa:
-- Un solo mes (enero 2020, elegido al azar dentro del rango, sin ninguna
-  razon especial mas que tener un mes con datos completos).
-- Un recorte MUY chico de la grilla: 5x5 celdas (25 celdas) en el centro
-  del area de estudio, no las ~1.500 completas.
-- Imprime cada resultado en pantalla para que los revises a ojo, en vez
-  de guardar directo a CSV.
-
-REQUISITOS (correr en la terminal de Codespaces):
-    pip install earthengine-api pandas numpy
+Confirma conexion a Earth Engine, respuesta de los 4 datasets y nombres de
+bandas de SoilGrids antes de ejecutar la ingesta completa.
 """
 
+import os
+import json
 import ee
 import pandas as pd
 import numpy as np
+from google.oauth2 import service_account
 
-# ---------------------------------------------------------------
-# 0. INICIALIZACION
-# ---------------------------------------------------------------
 PROJECT_ID = "nora-506511"
+SERVICE_ACCOUNT_KEY = os.environ.get("GEE_SERVICE_ACCOUNT_KEY")
 
-try:
-    ee.Initialize(project=PROJECT_ID)
-    print("Conexion a Earth Engine: OK")
-except Exception:
-    print("No habia sesion activa, iniciando autenticacion...")
-    ee.Authenticate()
-    ee.Initialize(project=PROJECT_ID)
-    print("Conexion a Earth Engine: OK (tras autenticar)")
+# En GitHub Actions usamos la cuenta de servicio guardada en el secret.
+# Solo usamos autenticacion interactiva como fallback para ejecucion local.
+if SERVICE_ACCOUNT_KEY:
+    print("Credenciales GEE: secret GEE_SERVICE_ACCOUNT_KEY detectado")
+    key_info = json.loads(SERVICE_ACCOUNT_KEY)
+    credentials = service_account.Credentials.from_service_account_info(
+        key_info,
+        scopes=["https://www.googleapis.com/auth/earthengine"],
+    )
+    ee.Initialize(credentials=credentials, project=PROJECT_ID)
+    print("Conexion a Earth Engine: OK (cuenta de servicio)")
+else:
+    print("GEE_SERVICE_ACCOUNT_KEY no encontrado; intentando autenticacion local...")
+    try:
+        ee.Initialize(project=PROJECT_ID)
+        print("Conexion a Earth Engine: OK")
+    except Exception:
+        print("No habia sesion activa, iniciando autenticacion interactiva...")
+        ee.Authenticate()
+        ee.Initialize(project=PROJECT_ID)
+        print("Conexion a Earth Engine: OK (tras autenticar)")
 
 # ---------------------------------------------------------------
-# 1. RECORTE CHICO DE PRUEBA (5x5 celdas, centro del area de estudio)
+# 1. RECORTE CHICO DE PRUEBA (5x5 celdas)
 # ---------------------------------------------------------------
 CELL_SIZE_DEG = 0.1
-# Centro aproximado del bounding box completo (-55.2,-51.3 / -15.2,-10.5)
 CENTER_LON = -53.25
 CENTER_LAT = -12.85
 
@@ -54,8 +53,7 @@ cell_id = 0
 for lon in lons:
     for lat in lats:
         rect = ee.Geometry.Rectangle([float(lon), float(lat), float(lon + CELL_SIZE_DEG), float(lat + CELL_SIZE_DEG)])
-        feat = ee.Feature(rect, {"cell_id": cell_id})
-        features.append(feat)
+        features.append(ee.Feature(rect, {"cell_id": cell_id}))
         cell_id += 1
 
 grid = ee.FeatureCollection(features)
@@ -102,7 +100,7 @@ chirps_img = (ee.ImageCollection("UCSB-CHG/CHIRPS/PENTAD")
               .select("precipitation")
               .sum()
               .rename("precip_mm"))
-reduce_and_print(chirps_img, 5000, "Precipitacion CHIRPS (mm del mes, enero=lluviosa, deberia ser alta)")
+reduce_and_print(chirps_img, 5000, "Precipitacion CHIRPS (mm del mes)")
 
 # ---------------------------------------------------------------
 # 6. ERA5-Land
@@ -113,10 +111,10 @@ era5_img = (ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR")
             .mean()
             .subtract(273.15)
             .rename("temp_c"))
-reduce_and_print(era5_img, 11132, "Temperatura ERA5-Land (esperado 20-30 C aprox)")
+reduce_and_print(era5_img, 11132, "Temperatura ERA5-Land (C)")
 
 # ---------------------------------------------------------------
-# 7. SoilGrids -- ESTE ES EL QUE TIENE EL SUPUESTO SIN VERIFICAR
+# 7. SoilGrids -- verificar nombres de banda reales
 # ---------------------------------------------------------------
 print("\n--- SoilGrids: verificando nombres de banda reales ---")
 try:
@@ -126,7 +124,3 @@ try:
 except Exception as e:
     print(f"ERROR al acceder a SoilGrids: {e}")
     band_names = []
-
-# Si el print de arriba muestra nombres distintos a "clay_0-5cm_mean" etc,
-# hay que ajustar SOIL_PROPS/SOIL_DEPTHS en el script completo antes de
-# correrlo -- no asumir que va a andar igual.
