@@ -25,6 +25,13 @@ jobs:
         run: |
           pip install earthengine-api pandas numpy supabase
 
+      - name: Configurar credenciales Earth Engine para CI
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          printf '%s' "$GEE_SERVICE_ACCOUNT_KEY" > "$RUNNER_TEMP/gee-service-account.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gee-service-account.json" >> "$GITHUB_ENV"
+
       - name: Ejecutar ingesta completa (2001-2024, ~1.880 celdas)
         env:
           GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
