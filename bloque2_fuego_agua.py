@@ -85,14 +85,23 @@ months = pd.date_range(f"{START_YEAR}-01-01", f"{END_YEAR}-12-01", freq="MS")
 def get_burned_fraction_monthly(year, month):
     """Fraccion de la celda quemada ese mes. MCD64A1, banda BurnDate
     (0 = no quemado, >0 = dia del año en que se quemo). Se binariza y
-    se promedia -- el promedio de una mascara 0/1 es la fraccion."""
+    se promedia -- el promedio de una mascara 0/1 es la fraccion.
+
+    IMPORTANTE: unmask(0) es obligatorio aca. Sin esto, Earth Engine
+    excluye del promedio cualquier pixel que haya quedado enmascarado
+    (lo cual incluye zonas no quemadas segun como viene la banda),
+    y el resultado da 1.0 siempre que hay al menos un pixel quemado
+    -- un error real que se detecto revisando los datos ya cargados
+    (promedio exactamente 1.0000 en todos los años, imposible en la
+    practica). unmask(0) fuerza a que "sin dato quemado" cuente como
+    0 en el promedio, no que se excluya."""
     start = ee.Date.fromYMD(year, month, 1)
     end = start.advance(1, "month")
     coll = (ee.ImageCollection("MODIS/061/MCD64A1")
             .filterDate(start, end)
             .select("BurnDate"))
     img = coll.mosaic()
-    burned_mask = img.gt(0).rename("burned_fraction")
+    burned_mask = img.gt(0).unmask(0).rename("burned_fraction")
     return burned_mask
 
 
