@@ -1,0 +1,47 @@
+name: Ingesta Completa Alto Xingu
+
+on:
+  # Disparo manual desde Actions
+  workflow_dispatch: {}
+  # Red de seguridad: si se corta por timeout (6h en privados), relanza cada 3h
+  # Gracias al checkpoint, retoma sin duplicar datos
+  schedule:
+    - cron: "0 */3 * * *"
+
+jobs:
+  ingesta_completa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install earthengine-api pandas numpy supabase
+
+      - name: Ejecutar ingesta completa (2001-2024, ~1.880 celdas)
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python ingesta_alto_xingu.py
+
+      - name: Resumen éxito
+        if: success()
+        run: |
+          echo "✅ Ingesta completada exitosamente"
+          echo "Los datos están guardados en Supabase (tabla: nora_ingesta_alto_xingu)"
+          echo "Si se ejecutó de nuevo, se retomó desde donde quedó sin duplicar filas."
+
+      - name: Notificación de fallo
+        if: failure()
+        run: |
+          echo "❌ La ingesta falló. Revisa el log arriba."
+          echo "Próxima ejecución automática en 3 horas (si está programado)."
+          exit 1
