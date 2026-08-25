@@ -1,0 +1,29 @@
+name: Bloque 2 - Fuego y Agua Alto Xingu
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 */3 * * *"
+
+jobs:
+  bloque2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install earthengine-api pandas numpy supabase
+
+      - name: Ejecutar bloque 2 (fuego + agua)
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python bloque2_fuego_agua.py
