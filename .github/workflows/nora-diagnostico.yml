@@ -1,0 +1,25 @@
+name: NORA - Diagnóstico
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Diagnóstico básico
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Probar runner
+        run: |
+          echo "GitHub Actions OK"
+          python --version
+          test -f ingesta_sistema_ampliado.py
+          python -m py_compile ingesta_sistema_ampliado.py
+          echo "NORA workflow syntax and Python compilation OK"
