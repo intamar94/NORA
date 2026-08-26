@@ -1,0 +1,28 @@
+name: NORA - Code Quality
+
+on:
+  push:
+    paths:
+      - "*.py"
+      - ".github/workflows/*.yml"
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compilar scripts
+        run: |
+          python -m py_compile ingesta_sistema_ampliado.py
+          python -m py_compile motor_descubrimiento.py
+          python -m py_compile bloque2_fuego_agua.py
+          echo "NORA: compilación Python correcta"
