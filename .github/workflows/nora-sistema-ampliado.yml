@@ -10,7 +10,7 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  test_ingesta:
+  ingest_2024:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install earthengine-api pandas numpy supabase
 
-      - name: Ejecutar prueba ampliada (1 mes, perfil full)
+      - name: Ejecutar ingesta 2024 completa
         env:
           GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
           GEE_PROJECT_ID: nora-506511
@@ -37,19 +37,18 @@ jobs:
           NORA_START_YEAR: "2024"
           NORA_END_YEAR: "2024"
           NORA_PROFILE: full
-          NORA_SMOKE_MONTH: "2"
         run: python ingesta_sistema_ampliado.py
 
       - name: Resumen
         if: success()
         run: |
-          echo "NORA: prueba ampliada completada."
+          echo "NORA: ingesta completa 2024 finalizada."
           echo "Región: Alto Xingu"
-          echo "Periodo: febrero 2024"
+          echo "Periodo: enero-diciembre 2024"
           echo "Perfil: full"
 
-      - name: Error en prueba
+      - name: Error
         if: failure()
         run: |
-          echo "NORA: la prueba ampliada falló. Revisar el log anterior."
+          echo "NORA: la ingesta 2024 falló. Revisar el log anterior."
           exit 1
