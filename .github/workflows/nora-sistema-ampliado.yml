@@ -44,11 +44,16 @@ jobs:
           GEE_PROJECT_ID: nora-506511
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          NORA_REGION_ID: ${{ inputs.region_id || 'alto_xingu' }}
-          NORA_START_YEAR: ${{ inputs.start_year || '2001' }}
-          NORA_END_YEAR: ${{ inputs.end_year || '2026' }}
-          NORA_PROFILE: ${{ inputs.profile || 'full' }}
-        run: python ingesta_sistema_ampliado.py
+          INPUT_REGION: ${{ inputs.region_id }}
+          INPUT_START: ${{ inputs.start_year }}
+          INPUT_END: ${{ inputs.end_year }}
+          INPUT_PROFILE: ${{ inputs.profile }}
+        run: |
+          export NORA_REGION_ID="${INPUT_REGION:-alto_xingu}"
+          export NORA_START_YEAR="${INPUT_START:-2001}"
+          export NORA_END_YEAR="${INPUT_END:-2026}"
+          export NORA_PROFILE="${INPUT_PROFILE:-full}"
+          python ingesta_sistema_ampliado.py
 
       - name: Resumen
         if: success()
