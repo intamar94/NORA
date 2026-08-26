@@ -6,53 +6,94 @@ on:
       region_id:
         description: "Región registrada en Supabase"
         required: true
+        type: string
         default: "alto_xingu"
       start_year:
         description: "Año inicial"
         required: true
-        default: "2001"
+        type: string
+        default: "2024"
       end_year:
         description: "Año final"
         required: true
-        default: "2026"
+        type: string
+        default: "2024"
       profile:
         description: "full = máximo panorama; core = variables principales"
         required: true
-        default: "full"
+        type: choice
+        options:
+          - core
+          - full
+        default: core
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nora-ingesta-${{ github.workflow }}-${{ inputs.region_id }}
+  cancel-in-progress: false
 
 jobs:
-  ingest:
+  validate:
+    name: Validar configuración
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 10
     steps:
-      - name: Clonar repositorio
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Python 3.11
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Instalar dependencias
-        run: pip install earthengine-api pandas numpy supabase
+        run: python -m pip install --upgrade pip && pip install earthengine-api pandas numpy supabase
 
-      - name: Ejecutar ingesta ampliada
+      - name: Compilar ingesta
+        run: python -m py_compile ingesta_sistema_ampliado.py
+
+      - name: Validar secretos
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          test -n "$GEE_SERVICE_ACCOUNT_KEY" || (echo "Falta GEE_SERVICE_ACCOUNT_KEY" && exit 1)
+          test -n "$SUPABASE_URL" || (echo "Falta SUPABASE_URL" && exit 1)
+          test -n "$SUPABASE_SERVICE_ROLE_KEY" || (echo "Falta SUPABASE_SERVICE_ROLE_KEY" && exit 1)
+          echo "Secretos requeridos presentes."
+
+  ingest:
+    name: Ejecutar ingesta
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: python -m pip install --upgrade pip && pip install earthengine-api pandas numpy supabase
+
+      - name: Ejecutar ingesta
         env:
           GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
           GEE_PROJECT_ID: nora-506511
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          INPUT_REGION: ${{ inputs.region_id }}
-          INPUT_START: ${{ inputs.start_year }}
-          INPUT_END: ${{ inputs.end_year }}
-          INPUT_PROFILE: ${{ inputs.profile }}
-        run: |
-          export NORA_REGION_ID="${INPUT_REGION:-alto_xingu}"
-          export NORA_START_YEAR="${INPUT_START:-2001}"
-          export NORA_END_YEAR="${INPUT_END:-2026}"
-          export NORA_PROFILE="${INPUT_PROFILE:-full}"
-          python ingesta_sistema_ampliado.py
+          NORA_REGION_ID: ${{ inputs.region_id }}
+          NORA_START_YEAR: ${{ inputs.start_year }}
+          NORA_END_YEAR: ${{ inputs.end_year }}
+          NORA_PROFILE: ${{ inputs.profile }}
+        run: python ingesta_sistema_ampliado.py
 
       - name: Resumen
         if: success()
-        run: echo "NORA: ingesta multidominio completada"
+        run: echo "NORA: ingesta multidominio completada correctamente."
