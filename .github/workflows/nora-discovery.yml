@@ -1,0 +1,43 @@
+name: NORA - Discovery Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      region_id:
+        description: "Región a analizar"
+        required: true
+        default: "alto_xingu"
+      max_lag:
+        description: "Máximo desfase temporal en meses"
+        required: true
+        default: "6"
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install pandas numpy supabase
+
+      - name: Ejecutar descubrimiento
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NORA_REGION_ID: ${{ inputs.region_id }}
+          NORA_MAX_LAG: ${{ inputs.max_lag }}
+        run: python motor_descubrimiento.py
+
+      - name: Publicar resultados
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-discoveries-${{ inputs.region_id }}
+          path: nora_discoveries.json
