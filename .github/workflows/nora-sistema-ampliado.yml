@@ -19,8 +19,6 @@ on:
         description: "full = máximo panorama; core = variables principales"
         required: true
         default: "full"
-  schedule:
-    - cron: "30 2 1 * *"
 
 jobs:
   ingest:
@@ -57,4 +55,4 @@ jobs:
 
       - name: Resumen
         if: success()
-        run: echo "NORA: ingesta multidominio completada para $NORA_REGION_ID"
+        run: echo "NORA: ingesta multidominio completada"
