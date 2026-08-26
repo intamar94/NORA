@@ -1,12 +1,4 @@
-"""NORA - ingesta mensual multidominio robusta.
-
-Principios:
-- una fila larga por celda/variable/mes en nora_observations;
-- checkpoint natural region+variable+cell+observed_at;
-- una evaluación server-side de Earth Engine por mes;
-- datasets con fecha de inicio posterior se omiten explícitamente;
-- núcleo climático/vegetación y capas ampliadas de agua, energía, suelo y atmósfera.
-"""
+"""NORA - ingesta mensual multidominio robusta."""
 import json
 import math
 import os
@@ -47,13 +39,11 @@ def get_one(table, **filters):
         raise RuntimeError(f"No existe {table}: {filters}")
     return result.data[0]
 
-
 region = get_one("nora_regions", region_id=REGION_KEY)
 region_db_id = region["id"]
 geom = region.get("geometry") or {}
 if geom.get("type") != "bbox":
     raise RuntimeError("La región debe tener geometry tipo bbox: [lon_min, lat_min, lon_max, lat_max].")
-
 lon_min, lat_min, lon_max, lat_max = map(float, geom["coordinates"])
 grid_size = float(region.get("grid_size_deg") or 0.1)
 lons = [round(lon_min + i * grid_size, 8) for i in range(math.ceil((lon_max - lon_min) / grid_size))]
@@ -61,60 +51,39 @@ lats = [round(lat_min + j * grid_size, 8) for j in range(math.ceil((lat_max - la
 features = []
 for i, lon in enumerate(lons):
     for j, lat in enumerate(lats):
-        features.append(
-            ee.Feature(
-                ee.Geometry.Rectangle([lon, lat, min(lon + grid_size, lon_max), min(lat + grid_size, lat_max)]),
-                {"cell_id": i * len(lats) + j, "longitude": lon + grid_size / 2, "latitude": lat + grid_size / 2},
-            )
-        )
+        features.append(ee.Feature(ee.Geometry.Rectangle([lon, lat, min(lon + grid_size, lon_max), min(lat + grid_size, lat_max)]), {"cell_id": i * len(lats) + j, "longitude": lon + grid_size / 2, "latitude": lat + grid_size / 2}))
 grid = ee.FeatureCollection(features)
 print(f"NORA | region={REGION_KEY} | cells={len(features)} | years={START_YEAR}-{END_YEAR} | profile={PROFILE} | smoke_month={SMOKE_MONTH}")
 
 vars_db = sb.table("nora_variables").select("id,key,unit,source_id").execute().data
 VAR = {row["key"]: row for row in vars_db}
 
-
 def month_hours(year, month):
     return int(pd.Period(f"{year}-{month:02d}").days_in_month) * 24
-
 
 def add_collection(image, collection_id, source_band, output_name, start, end, factor=1.0, offset=0.0, reducer="mean"):
     collection = ee.ImageCollection(collection_id).filterDate(start, end).select(source_band)
     value = (collection.sum() if reducer == "sum" else collection.mean()).multiply(factor).add(offset).rename(output_name)
     return image.addBands(value)
 
-
 def monthly_image(year, month):
     start = ee.Date.fromYMD(year, month, 1)
     end = start.advance(1, "month")
     days = month_hours(year, month) / 24.0
-
     era = ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR").filterDate(start, end).mean()
     temp_c = era.select("temperature_2m").subtract(273.15)
     dew_c = era.select("dewpoint_temperature_2m").subtract(273.15)
     es = temp_c.expression("0.6108 * exp(17.27*t/(t+237.3))", {"t": temp_c})
     ea = dew_c.expression("0.6108 * exp(17.27*t/(t+237.3))", {"t": dew_c})
-
     image = ee.Image.cat([
-        era.select("total_precipitation_sum").multiply(1000).rename("precip_mm"),
-        temp_c.rename("temp_c"),
-        era.select("runoff_sum").multiply(1000).rename("runoff_mm"),
-        era.select("surface_runoff_sum").multiply(1000).rename("surface_runoff_mm"),
-        era.select("sub_surface_runoff_sum").multiply(1000).rename("subsurface_runoff_mm"),
-        era.select("total_evaporation_sum").multiply(-1000).rename("evapotranspiration_mm"),
-        era.select("potential_evaporation_sum").multiply(1000).rename("potential_evapotranspiration_mm"),
-        era.select("volumetric_soil_water_layer_1").rename("soil_moisture_surface"),
-        era.select([
-            "volumetric_soil_water_layer_1",
-            "volumetric_soil_water_layer_2",
-            "volumetric_soil_water_layer_3",
-        ]).reduce(ee.Reducer.mean()).rename("soil_moisture_rootzone"),
-        es.subtract(ea).max(0).rename("vpd_kpa"),
-        era.select("u_component_of_wind_10m").pow(2).add(era.select("v_component_of_wind_10m").pow(2)).sqrt().rename("wind_speed_ms"),
-        era.select("surface_solar_radiation_downwards_sum").divide(days * 86400).rename("surface_radiation_wm2"),
-        era.select("surface_pressure").rename("surface_pressure_pa"),
+        era.select("total_precipitation_sum").multiply(1000).rename("precip_mm"), temp_c.rename("temp_c"),
+        era.select("runoff_sum").multiply(1000).rename("runoff_mm"), era.select("surface_runoff_sum").multiply(1000).rename("surface_runoff_mm"),
+        era.select("sub_surface_runoff_sum").multiply(1000).rename("subsurface_runoff_mm"), era.select("total_evaporation_sum").multiply(-1000).rename("evapotranspiration_mm"),
+        era.select("potential_evaporation_sum").multiply(1000).rename("potential_evapotranspiration_mm"), era.select("volumetric_soil_water_layer_1").rename("soil_moisture_surface"),
+        era.select(["volumetric_soil_water_layer_1","volumetric_soil_water_layer_2","volumetric_soil_water_layer_3"]).reduce(ee.Reducer.mean()).rename("soil_moisture_rootzone"),
+        es.subtract(ea).max(0).rename("vpd_kpa"), era.select("u_component_of_wind_10m").pow(2).add(era.select("v_component_of_wind_10m").pow(2)).sqrt().rename("wind_speed_ms"),
+        era.select("surface_solar_radiation_downwards_sum").divide(days * 86400).rename("surface_radiation_wm2"), era.select("surface_pressure").rename("surface_pressure_pa"),
     ])
-
     image = add_collection(image, "MODIS/061/MOD13Q1", "NDVI", "ndvi", start, end, factor=0.0001)
     image = add_collection(image, "MODIS/061/MOD13Q1", "EVI", "evi", start, end, factor=0.0001)
     image = add_collection(image, "MODIS/061/MOD11A2", "LST_Day_1km", "lst_day_c", start, end, factor=0.02, offset=-273.15)
@@ -122,7 +91,6 @@ def monthly_image(year, month):
     image = add_collection(image, "MODIS/061/MCD15A3H", "Lai", "lai", start, end, factor=0.1)
     image = add_collection(image, "MODIS/061/MCD15A3H", "Fpar", "fpar", start, end, factor=0.01)
     image = add_collection(image, "NASA/GPM_L3/IMERG_V07", "precipitation", "gpm_precip_mm", start, end, factor=days * 24.0)
-
     if year >= 2015:
         image = add_collection(image, "NASA/SMAP/SPL4SMGP/008", "sm_surface", "smap_surface_soil_moisture", start, end)
         image = add_collection(image, "NASA/SMAP/SPL4SMGP/008", "sm_rootzone", "smap_rootzone_soil_moisture", start, end)
@@ -139,92 +107,52 @@ def monthly_image(year, month):
         image = add_collection(image, "MODIS/061/MOD17A2H", "Gpp", "gpp", start, end, factor=0.0001, reducer="sum")
     return image
 
-
 BANDS = {
-    "precip_mm": "precip_mm", "temp_c": "temp_c", "ndvi": "ndvi", "runoff_mm": "runoff_mm",
-    "surface_runoff_mm": "surface_runoff_mm", "subsurface_runoff_mm": "subsurface_runoff_mm",
-    "evapotranspiration_mm": "evapotranspiration_mm", "potential_evapotranspiration_mm": "potential_evapotranspiration_mm",
-    "soil_moisture_surface": "soil_moisture_surface", "soil_moisture_rootzone": "soil_moisture_rootzone",
-    "lst_day_c": "lst_day_c", "lst_night_c": "lst_night_c", "lai": "lai", "fpar": "fpar", "vpd_kpa": "vpd_kpa",
-    "wind_speed_ms": "wind_speed_ms", "surface_radiation_wm2": "surface_radiation_wm2", "surface_pressure_pa": "surface_pressure_pa",
-    "gpm_precip_mm": "gpm_precip_mm", "smap_surface_soil_moisture": "smap_surface_soil_moisture",
-    "smap_rootzone_soil_moisture": "smap_rootzone_soil_moisture", "cloud_fraction": "cloud_fraction",
-    "cloud_top_height_m": "cloud_top_height_m", "cloud_optical_depth": "cloud_optical_depth", "co_mol_m2": "co_mol_m2",
-    "no2_mol_m2": "no2_mol_m2", "ch4_ppb": "ch4_ppb", "gpp": "gpp", "aod": "aod", "evi": "evi",
+    "precip_mm":"precip_mm","temp_c":"temp_c","ndvi":"ndvi","runoff_mm":"runoff_mm","surface_runoff_mm":"surface_runoff_mm","subsurface_runoff_mm":"subsurface_runoff_mm","evapotranspiration_mm":"evapotranspiration_mm","potential_evapotranspiration_mm":"potential_evapotranspiration_mm","soil_moisture_surface":"soil_moisture_surface","soil_moisture_rootzone":"soil_moisture_rootzone","lst_day_c":"lst_day_c","lst_night_c":"lst_night_c","lai":"lai","fpar":"fpar","vpd_kpa":"vpd_kpa","wind_speed_ms":"wind_speed_ms","surface_radiation_wm2":"surface_radiation_wm2","surface_pressure_pa":"surface_pressure_pa","gpm_precip_mm":"gpm_precip_mm","smap_surface_soil_moisture":"smap_surface_soil_moisture","smap_rootzone_soil_moisture":"smap_rootzone_soil_moisture","cloud_fraction":"cloud_fraction","cloud_top_height_m":"cloud_top_height_m","cloud_optical_depth":"cloud_optical_depth","co_mol_m2":"co_mol_m2","no2_mol_m2":"no2_mol_m2","ch4_ppb":"ch4_ppb","gpp":"gpp","aod":"aod","evi":"evi",
 }
 if PROFILE == "core":
-    allowed = {
-        "precip_mm", "temp_c", "ndvi", "runoff_mm", "evapotranspiration_mm", "soil_moisture_rootzone",
-        "lst_day_c", "lai", "vpd_kpa", "gpm_precip_mm", "cloud_fraction",
-    }
-    BANDS = {k: v for k, v in BANDS.items() if k in allowed}
-
+    allowed={"precip_mm","temp_c","ndvi","runoff_mm","evapotranspiration_mm","soil_moisture_rootzone","lst_day_c","lai","vpd_kpa","gpm_precip_mm","cloud_fraction"}
+    BANDS={k:v for k,v in BANDS.items() if k in allowed}
 
 def upload_rows(rows):
-    for start in range(0, len(rows), BATCH_SIZE):
-        sb.table("nora_observations").upsert(rows[start : start + BATCH_SIZE]).execute()
+    for start in range(0,len(rows),BATCH_SIZE):
+        batch=rows[start:start+BATCH_SIZE]
+        # Supabase/PostgREST upsert must name the exact conflict target when a
+        # manually-created unique index is not exposed as a named constraint.
+        # Update rows one-by-one on conflict to guarantee idempotency.
+        for row in batch:
+            existing=(sb.table("nora_observations").select("id").eq("region_id",row["region_id"]).eq("variable_id",row["variable_id"]).eq("cell_id",row["cell_id"]).eq("observed_at",row["observed_at"]).limit(1).execute().data)
+            if existing:
+                sb.table("nora_observations").update(row).eq("id",existing[0]["id"]).execute()
+            else:
+                sb.table("nora_observations").insert(row).execute()
 
-
-for year in range(START_YEAR, END_YEAR + 1):
-    months = [SMOKE_MONTH] if SMOKE_MONTH else range(1, 13)
+for year in range(START_YEAR,END_YEAR+1):
+    months=[SMOKE_MONTH] if SMOKE_MONTH else range(1,13)
     for month in months:
-        observed_at = f"{year}-{month:02d}-01T00:00:00+00:00"
-        existing = (
-            sb.table("nora_observations")
-            .select("variable_id", count="exact")
-            .eq("region_id", region_db_id)
-            .eq("observed_at", observed_at)
-            .execute()
-        )
-        existing_ids = {row["variable_id"] for row in (existing.data or [])}
-        required_ids = {VAR[k]["id"] for k in BANDS if k in VAR}
+        observed_at=f"{year}-{month:02d}-01T00:00:00+00:00"
+        existing=sb.table("nora_observations").select("variable_id",count="exact").eq("region_id",region_db_id).eq("observed_at",observed_at).execute()
+        existing_ids={row["variable_id"] for row in (existing.data or [])}
+        required_ids={VAR[k]["id"] for k in BANDS if k in VAR}
         if required_ids and required_ids.issubset(existing_ids):
             print(f"SKIP {observed_at[:7]}: checkpoint completo ({len(required_ids)} variables)")
             continue
-
-        image = monthly_image(year, month)
-        band_names = set(image.bandNames().getInfo())
-        active = [(key, band) for key, band in BANDS.items() if key in VAR and band in band_names]
+        image=monthly_image(year,month)
+        band_names=set(image.bandNames().getInfo())
+        active=[(key,band) for key,band in BANDS.items() if key in VAR and band in band_names]
         if not active:
             print(f"SKIP {observed_at[:7]}: sin bandas activas")
             continue
-
-        selected = image.select([band for _, band in active])
-        reduced = selected.reduceRegions(
-            collection=grid,
-            reducer=ee.Reducer.mean(),
-            scale=11132,
-            tileScale=4,
-        ).getInfo()["features"]
-
-        rows = []
+        selected=image.select([band for _,band in active])
+        reduced=selected.reduceRegions(collection=grid,reducer=ee.Reducer.mean(),scale=11132,tileScale=4).getInfo()["features"]
+        rows=[]
         for feature in reduced:
-            props = feature["properties"]
-            cell_id = int(props["cell_id"])
-            for key, band in active:
-                value = props.get(band)
-                if value is None or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-                    continue
-                rows.append({
-                    "region_id": region_db_id,
-                    "variable_id": VAR[key]["id"],
-                    "source_id": VAR[key]["source_id"],
-                    "cell_id": cell_id,
-                    "longitude": props.get("longitude"),
-                    "latitude": props.get("latitude"),
-                    "observed_at": observed_at,
-                    "value": float(value),
-                    "unit": VAR[key]["unit"],
-                    "metadata": {
-                        "profile": PROFILE,
-                        "aggregation": "monthly_mean",
-                        "earth_engine_band": band,
-                        "source_period": f"{year}-{month:02d}",
-                    },
-                })
-
+            props=feature["properties"]; cell_id=int(props["cell_id"])
+            for key,band in active:
+                value=props.get(band)
+                if value is None or not isinstance(value,(int,float)) or not math.isfinite(float(value)): continue
+                rows.append({"region_id":region_db_id,"variable_id":VAR[key]["id"],"source_id":VAR[key]["source_id"],"cell_id":cell_id,"longitude":props.get("longitude"),"latitude":props.get("latitude"),"observed_at":observed_at,"value":float(value),"unit":VAR[key]["unit"],"metadata":{"profile":PROFILE,"aggregation":"monthly_mean","earth_engine_band":band,"source_period":f"{year}-{month:02d}"}})
         upload_rows(rows)
         print(f"OK {year}-{month:02d}: {len(reduced)} cells / {len(rows)} observations / {len(active)} variables")
         time.sleep(0.1)
-
 print("NORA: ingesta ampliada completada.")
