@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install earthengine-api pandas numpy supabase
 
-      - name: Ejecutar prueba ampliada (1 mes, perfil core)
+      - name: Ejecutar prueba ampliada (1 mes, perfil full)
         env:
           GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
           GEE_PROJECT_ID: nora-506511
@@ -36,8 +36,8 @@ jobs:
           NORA_REGION_ID: alto_xingu
           NORA_START_YEAR: "2024"
           NORA_END_YEAR: "2024"
-          NORA_PROFILE: core
-          NORA_SMOKE_MONTH: "1"
+          NORA_PROFILE: full
+          NORA_SMOKE_MONTH: "2"
         run: python ingesta_sistema_ampliado.py
 
       - name: Resumen
@@ -45,8 +45,8 @@ jobs:
         run: |
           echo "NORA: prueba ampliada completada."
           echo "Región: Alto Xingu"
-          echo "Periodo: enero 2024"
-          echo "Perfil: core"
+          echo "Periodo: febrero 2024"
+          echo "Perfil: full"
 
       - name: Error en prueba
         if: failure()
