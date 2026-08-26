@@ -2,121 +2,48 @@ name: NORA - Sistema Tierra ampliado
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "ingesta_sistema_ampliado.py"
-      - ".github/workflows/nora-sistema-ampliado.yml"
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      region_id:
-        description: "Región registrada en Supabase"
-        required: true
-        type: string
-        default: "alto_xingu"
-      start_year:
-        description: "Año inicial"
-        required: true
-        type: string
-        default: "2024"
-      end_year:
-        description: "Año final"
-        required: true
-        type: string
-        default: "2024"
-      profile:
-        description: "core = estable; full = panorama ampliado"
-        required: true
-        type: choice
-        options: [core, full]
-        default: core
 
 permissions:
   contents: read
 
 jobs:
-  smoke:
-    name: Diagnóstico NORA
+  test:
+    name: Prueba NORA
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
-      GEE_PROJECT_ID: nora-506511
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      NORA_REGION_ID: ${{ inputs.region_id || 'alto_xingu' }}
-      NORA_START_YEAR: ${{ inputs.start_year || '2024' }}
-      NORA_END_YEAR: ${{ inputs.end_year || '2024' }}
-      NORA_PROFILE: ${{ inputs.profile || 'core' }}
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
           pip install earthengine-api pandas numpy supabase
 
-      - name: Validar secretos y código
+      - name: Validar script
+        run: python -m py_compile ingesta_sistema_ampliado.py
+
+      - name: Ejecutar prueba mensual
         env:
           GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+          GEE_PROJECT_ID: nora-506511
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          python -m py_compile ingesta_sistema_ampliado.py
-          test -n "$GEE_SERVICE_ACCOUNT_KEY"
-          test -n "$SUPABASE_URL"
-          test -n "$SUPABASE_SERVICE_ROLE_KEY"
-          python - <<'PY'
-          import json, os
-          data = json.loads(os.environ['GEE_SERVICE_ACCOUNT_KEY'])
-          required = ('client_email', 'private_key', 'project_id')
-          missing = [x for x in required if not data.get(x)]
-          if missing:
-              raise SystemExit('Faltan campos en GEE_SERVICE_ACCOUNT_KEY: ' + ', '.join(missing))
-          print('OK: secretos y código válidos')
-          PY
-
-      - name: Smoke Earth Engine + Supabase
-        env:
-          NORA_SMOKE_MONTH: "1"
+          NORA_REGION_ID: alto_xingu
+          NORA_START_YEAR: '2024'
+          NORA_END_YEAR: '2024'
+          NORA_PROFILE: core
+          NORA_SMOKE_MONTH: '1'
         run: python ingesta_sistema_ampliado.py
 
-  ingest:
-    name: Ingesta solicitada
-    needs: smoke
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
-      GEE_PROJECT_ID: nora-506511
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      NORA_REGION_ID: ${{ inputs.region_id }}
-      NORA_START_YEAR: ${{ inputs.start_year }}
-      NORA_END_YEAR: ${{ inputs.end_year }}
-      NORA_PROFILE: ${{ inputs.profile }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Instalar dependencias
-        run: |
-          python -m pip install --upgrade pip
-          pip install earthengine-api pandas numpy supabase
-
-      - name: Ejecutar ingesta
-        run: python ingesta_sistema_ampliado.py
-
-      - name: Confirmación
-        run: echo "NORA: ingesta completada."
+      - name: Resultado
+        if: success()
+        run: echo 'NORA: prueba mensual completada correctamente.'
