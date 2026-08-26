@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#08111f" />
+  <title>NORA — Network of Observations & Relationship Analysis</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">N</span><div><strong>NORA</strong><small>Scientific discovery</small></div></div>
+      <nav>
+        <button class="nav active" data-view="explorer">◈ <span>Explorer</span></button>
+        <button class="nav" data-view="analysis">⌁ <span>Analysis Lab</span></button>
+        <button class="nav" data-view="discover">✦ <span>Discover</span></button>
+        <button class="nav" data-view="hypotheses">◇ <span>Hypotheses</span></button>
+      </nav>
+      <div class="sidebar-bottom"><div class="status-dot"></div><span>Data layer online</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><span class="eyebrow">EARTH SYSTEM</span><h1 id="page-title">Explorer</h1></div>
+        <div class="context"><span>REGION</span><strong>Alto Xingu</strong><span class="sep">•</span><span>2001—2024</span></div>
+      </header>
+
+      <section id="explorer" class="view active-view">
+        <div class="control-row">
+          <label>Variable<select id="variable"><option value="ndvi">NDVI</option><option value="precip">Precipitación</option><option value="temp">Temperatura</option><option value="water">Agua</option><option value="fire">Fuego</option></select></label>
+          <label>Periodo<select><option>2001—2024</option><option>2019—2024</option><option>2001—2018</option></select></label>
+          <div class="metric"><span>CELDAS</span><strong>1,880</strong></div><div class="metric"><span>MESES</span><strong>288</strong></div><div class="metric"><span>OBSERVACIONES</span><strong>541,440</strong></div>
+        </div>
+        <div class="explorer-grid">
+          <div class="card map-card"><div class="card-head"><div><span class="eyebrow">SPATIAL FIELD</span><h2 id="map-title">NDVI · Alto Xingu</h2></div><div class="legend"><span></span><span></span><span></span><span></span><span></span></div></div><div id="map" class="map"></div><div class="map-footer"><span>−55.2°</span><span>Alto Xingu · 0.1° grid</span><span>−51.3°</span></div></div>
+          <div class="card detail-card"><span class="eyebrow">SELECTED CELL</span><h2 id="cell-title">Celda 842</h2><div class="value-grid"><div><span>NDVI</span><strong>0.81</strong></div><div><span>LLUVIA</span><strong>318 <small>mm</small></strong></div><div><span>TEMP.</span><strong>25.7 <small>°C</small></strong></div><div><span>AGUA</span><strong>0.64</strong></div></div><div class="mini-chart" id="mini-chart"></div><div class="relation"><span>RESPUESTA A LLUVIA</span><strong>r = 0.78</strong><small>lag óptimo · 2 meses</small></div><button class="primary" data-view="analysis">Investigar relación →</button></div>
+        </div>
+      </section>
+
+      <section id="analysis" class="view">
+        <div class="section-intro"><div><span class="eyebrow">ANALYSIS LAB</span><h2>Buscar relaciones</h2><p>Explora relaciones temporales entre dominios ambientales.</p></div><button class="primary" id="run-analysis">Ejecutar análisis</button></div>
+        <div class="analysis-grid"><div class="card form-card"><label>Variable objetivo<select><option>NDVI</option></select></label><label>Variables candidatas<select multiple><option selected>Precipitación</option><option selected>Temperatura</option><option selected>Agua</option><option selected>Fuego</option><option selected>Suelo</option></select></label><label>Retardo temporal <input id="lag" type="range" min="0" max="6" value="2"/><output id="lag-value">2 meses</output></label><div class="analysis-note">El análisis compara las series por celda y busca señales con retardos de 0–6 meses.</div></div><div class="card chart-card"><span class="eyebrow">RELATIONSHIP</span><h3>Precipitación → NDVI</h3><div class="big-stat">+0.462 <small>lag 1</small></div><div class="bars"><i style="height:46%"></i><i style="height:72%"></i><i style="height:74%"></i><i style="height:57%"></i><i style="height:31%"></i><i style="height:18%"></i><i style="height:8%"></i></div><div class="axis"><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6 meses</span></div></div></div>
+      </section>
+
+      <section id="discover" class="view"><div class="section-intro"><div><span class="eyebrow">DISCOVERY ENGINE</span><h2>Patrones detectados</h2><p>Señales encontradas en la matriz de Alto Xingu.</p></div></div><div class="discovery-grid"><div class="card discovery-main"><div class="discovery-number">01</div><span class="eyebrow">PATTERN DETECTED</span><h2>La sensibilidad de la vegetación a la precipitación cambia espacialmente.</h2><p>La precipitación del mes anterior presenta una relación positiva con NDVI en la mayoría de las celdas, pero la intensidad varía considerablemente.</p><div class="distribution"><div><strong>981</strong><span>fuerte</span></div><div><strong>462</strong><span>moderada</span></div><div><strong>208</strong><span>débil</span></div><div><strong>229</strong><span>negativa</span></div></div></div><div class="card evidence"><span class="eyebrow">ASSOCIATED FACTORS</span><div class="factor"><span>SOC</span><b>−0.669</b><i style="width:82%"></i></div><div class="factor"><span>pH</span><b>+0.698</b><i style="width:86%"></i></div><div class="factor"><span>Arena</span><b>+0.216</b><i style="width:32%"></i></div><div class="factor"><span>Fuego</span><b>+0.213</b><i style="width:31%"></i></div><div class="factor"><span>Agua</span><b>−0.135</b><i style="width:20%"></i></div><button class="secondary" data-view="hypotheses">Investigar hipótesis →</button></div></div></section>
+
+      <section id="hypotheses" class="view"><div class="section-intro"><div><span class="eyebrow">HYPOTHESIS LAB</span><h2>Hipótesis científicas</h2><p>Patrones convertidos en investigaciones verificables.</p></div></div><div class="card hypothesis"><div class="hyp-head"><span class="tag">NORA #001</span><span class="state">EXPLORATORY</span></div><h2>Las propiedades del suelo pueden modular la sensibilidad de la vegetación a la precipitación.</h2><div class="hyp-grid"><div><span>EVIDENCIA</span><strong>0.70</strong></div><div><span>PERIODO</span><strong>2001—2024</strong></div><div><span>CELDAS</span><strong>1,880</strong></div><div><span>CAUSALIDAD</span><strong>Pendiente</strong></div></div><div class="checklist"><div>✓ Señal espacial detectada</div><div>✓ Retardo temporal identificado</div><div>○ Validación temporal</div><div>○ Validación espacial</div><div>○ Causal discovery</div></div></div></section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
