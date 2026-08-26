@@ -2,12 +2,10 @@
 
 Principios:
 - una fila larga por celda/variable/mes en nora_observations;
-- checkpoint natural region+variable+cell+observed_at (índice único en Supabase);
-- una sola evaluación interactiva de Earth Engine por mes, evitando getInfo() por dataset;
-- datasets con fecha de inicio posterior se omiten explícitamente, nunca se rellenan;
-- incluye núcleo climático/vegetación y capas ampliadas de agua, energía, suelo y atmósfera.
-
-Fuentes principales: ERA5-Land, MODIS, GPM IMERG, SMAP y Sentinel-5P.
+- checkpoint natural region+variable+cell+observed_at;
+- una evaluación server-side de Earth Engine por mes;
+- datasets con fecha de inicio posterior se omiten explícitamente;
+- núcleo climático/vegetación y capas ampliadas de agua, energía, suelo y atmósfera.
 """
 import json
 import math
@@ -23,13 +21,14 @@ REGION_KEY = os.getenv("NORA_REGION_ID", "alto_xingu")
 START_YEAR = int(os.getenv("NORA_START_YEAR", "2001"))
 END_YEAR = int(os.getenv("NORA_END_YEAR", "2024"))
 PROFILE = os.getenv("NORA_PROFILE", "full")
+SMOKE_MONTH = os.getenv("NORA_SMOKE_MONTH")
+SMOKE_MONTH = int(SMOKE_MONTH) if SMOKE_MONTH else None
 BATCH_SIZE = 5000
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Earth Engine authentication for GitHub Actions.
 key_data = os.getenv("GEE_SERVICE_ACCOUNT_KEY")
 if key_data:
     key = json.loads(key_data)
@@ -57,8 +56,6 @@ if geom.get("type") != "bbox":
 
 lon_min, lat_min, lon_max, lat_max = map(float, geom["coordinates"])
 grid_size = float(region.get("grid_size_deg") or 0.1)
-
-# Build a deterministic grid. Keep cell_id stable between executions.
 lons = [round(lon_min + i * grid_size, 8) for i in range(math.ceil((lon_max - lon_min) / grid_size))]
 lats = [round(lat_min + j * grid_size, 8) for j in range(math.ceil((lat_max - lat_min) / grid_size))]
 features = []
@@ -71,7 +68,7 @@ for i, lon in enumerate(lons):
             )
         )
 grid = ee.FeatureCollection(features)
-print(f"NORA | region={REGION_KEY} | cells={len(features)} | years={START_YEAR}-{END_YEAR} | profile={PROFILE}")
+print(f"NORA | region={REGION_KEY} | cells={len(features)} | years={START_YEAR}-{END_YEAR} | profile={PROFILE} | smoke_month={SMOKE_MONTH}")
 
 vars_db = sb.table("nora_variables").select("id,key,unit,source_id").execute().data
 VAR = {row["key"]: row for row in vars_db}
@@ -92,7 +89,6 @@ def monthly_image(year, month):
     end = start.advance(1, "month")
     days = month_hours(year, month) / 24.0
 
-    # ERA5-Land is available throughout the historical period and supplies the backbone.
     era = ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR").filterDate(start, end).mean()
     temp_c = era.select("temperature_2m").subtract(273.15)
     dew_c = era.select("dewpoint_temperature_2m").subtract(273.15)
@@ -105,7 +101,6 @@ def monthly_image(year, month):
         era.select("runoff_sum").multiply(1000).rename("runoff_mm"),
         era.select("surface_runoff_sum").multiply(1000).rename("surface_runoff_mm"),
         era.select("sub_surface_runoff_sum").multiply(1000).rename("subsurface_runoff_mm"),
-        # ERA5 convention: evaporation is negative for upward flux, hence negate.
         era.select("total_evaporation_sum").multiply(-1000).rename("evapotranspiration_mm"),
         era.select("potential_evaporation_sum").multiply(1000).rename("potential_evapotranspiration_mm"),
         era.select("volumetric_soil_water_layer_1").rename("soil_moisture_surface"),
@@ -120,32 +115,17 @@ def monthly_image(year, month):
         era.select("surface_pressure").rename("surface_pressure_pa"),
     ])
 
-    # MODIS vegetation and land-surface state. MOD13Q1 provides NDVI from 2000 onward.
     image = add_collection(image, "MODIS/061/MOD13Q1", "NDVI", "ndvi", start, end, factor=0.0001)
     image = add_collection(image, "MODIS/061/MOD13Q1", "EVI", "evi", start, end, factor=0.0001)
     image = add_collection(image, "MODIS/061/MOD11A2", "LST_Day_1km", "lst_day_c", start, end, factor=0.02, offset=-273.15)
     image = add_collection(image, "MODIS/061/MOD11A2", "LST_Night_1km", "lst_night_c", start, end, factor=0.02, offset=-273.15)
     image = add_collection(image, "MODIS/061/MCD15A3H", "Lai", "lai", start, end, factor=0.1)
     image = add_collection(image, "MODIS/061/MCD15A3H", "Fpar", "fpar", start, end, factor=0.01)
+    image = add_collection(image, "NASA/GPM_L3/IMERG_V07", "precipitation", "gpm_precip_mm", start, end, factor=days * 24.0)
 
-    # GPM is an independent precipitation measurement. Its band is mm/hour, so integrate over the month.
-    image = add_collection(
-        image,
-        "NASA/GPM_L3/IMERG_V07",
-        "precipitation",
-        "gpm_precip_mm",
-        start,
-        end,
-        factor=days * 24.0,
-        reducer="mean",
-    )
-
-    # SMAP begins in 2015. Do not create artificial pre-2015 values.
     if year >= 2015:
         image = add_collection(image, "NASA/SMAP/SPL4SMGP/008", "sm_surface", "smap_surface_soil_moisture", start, end)
         image = add_collection(image, "NASA/SMAP/SPL4SMGP/008", "sm_rootzone", "smap_rootzone_soil_moisture", start, end)
-
-    # Sentinel-5P starts in the satellite era; CH4 starts in 2019.
     if year >= 2018:
         image = add_collection(image, "COPERNICUS/S5P/OFFL/L3_CLOUD", "cloud_fraction", "cloud_fraction", start, end)
         image = add_collection(image, "COPERNICUS/S5P/OFFL/L3_CLOUD", "cloud_top_height", "cloud_top_height_m", start, end)
@@ -155,50 +135,27 @@ def monthly_image(year, month):
     if year >= 2019:
         image = add_collection(image, "COPERNICUS/S5P/OFFL/L3_CH4", "CH4_column_volume_mixing_ratio_dry_air", "ch4_ppb", start, end)
         image = add_collection(image, "COPERNICUS/S5P/OFFL/L3_CH4", "aerosol_optical_depth", "aod", start, end)
-
-    # GPP V6.1 begins in 2021; keep the temporal gap explicit.
     if year >= 2021:
         image = add_collection(image, "MODIS/061/MOD17A2H", "Gpp", "gpp", start, end, factor=0.0001, reducer="sum")
-
     return image
 
 
 BANDS = {
-    "precip_mm": "precip_mm",
-    "temp_c": "temp_c",
-    "ndvi": "ndvi",
-    "runoff_mm": "runoff_mm",
-    "surface_runoff_mm": "surface_runoff_mm",
-    "subsurface_runoff_mm": "subsurface_runoff_mm",
-    "evapotranspiration_mm": "evapotranspiration_mm",
-    "potential_evapotranspiration_mm": "potential_evapotranspiration_mm",
-    "soil_moisture_surface": "soil_moisture_surface",
-    "soil_moisture_rootzone": "soil_moisture_rootzone",
-    "lst_day_c": "lst_day_c",
-    "lst_night_c": "lst_night_c",
-    "lai": "lai",
-    "fpar": "fpar",
-    "vpd_kpa": "vpd_kpa",
-    "wind_speed_ms": "wind_speed_ms",
-    "surface_radiation_wm2": "surface_radiation_wm2",
-    "surface_pressure_pa": "surface_pressure_pa",
-    "gpm_precip_mm": "gpm_precip_mm",
-    "smap_surface_soil_moisture": "smap_surface_soil_moisture",
-    "smap_rootzone_soil_moisture": "smap_rootzone_soil_moisture",
-    "cloud_fraction": "cloud_fraction",
-    "cloud_top_height_m": "cloud_top_height_m",
-    "cloud_optical_depth": "cloud_optical_depth",
-    "co_mol_m2": "co_mol_m2",
-    "no2_mol_m2": "no2_mol_m2",
-    "ch4_ppb": "ch4_ppb",
-    "gpp": "gpp",
-    "aod": "aod",
-    "evi": "evi",
+    "precip_mm": "precip_mm", "temp_c": "temp_c", "ndvi": "ndvi", "runoff_mm": "runoff_mm",
+    "surface_runoff_mm": "surface_runoff_mm", "subsurface_runoff_mm": "subsurface_runoff_mm",
+    "evapotranspiration_mm": "evapotranspiration_mm", "potential_evapotranspiration_mm": "potential_evapotranspiration_mm",
+    "soil_moisture_surface": "soil_moisture_surface", "soil_moisture_rootzone": "soil_moisture_rootzone",
+    "lst_day_c": "lst_day_c", "lst_night_c": "lst_night_c", "lai": "lai", "fpar": "fpar", "vpd_kpa": "vpd_kpa",
+    "wind_speed_ms": "wind_speed_ms", "surface_radiation_wm2": "surface_radiation_wm2", "surface_pressure_pa": "surface_pressure_pa",
+    "gpm_precip_mm": "gpm_precip_mm", "smap_surface_soil_moisture": "smap_surface_soil_moisture",
+    "smap_rootzone_soil_moisture": "smap_rootzone_soil_moisture", "cloud_fraction": "cloud_fraction",
+    "cloud_top_height_m": "cloud_top_height_m", "cloud_optical_depth": "cloud_optical_depth", "co_mol_m2": "co_mol_m2",
+    "no2_mol_m2": "no2_mol_m2", "ch4_ppb": "ch4_ppb", "gpp": "gpp", "aod": "aod", "evi": "evi",
 }
 if PROFILE == "core":
     allowed = {
-        "precip_mm", "temp_c", "ndvi", "runoff_mm", "evapotranspiration_mm",
-        "soil_moisture_rootzone", "lst_day_c", "lai", "vpd_kpa", "gpm_precip_mm", "cloud_fraction",
+        "precip_mm", "temp_c", "ndvi", "runoff_mm", "evapotranspiration_mm", "soil_moisture_rootzone",
+        "lst_day_c", "lai", "vpd_kpa", "gpm_precip_mm", "cloud_fraction",
     }
     BANDS = {k: v for k, v in BANDS.items() if k in allowed}
 
@@ -209,9 +166,9 @@ def upload_rows(rows):
 
 
 for year in range(START_YEAR, END_YEAR + 1):
-    for month in range(1, 13):
+    months = [SMOKE_MONTH] if SMOKE_MONTH else range(1, 13)
+    for month in months:
         observed_at = f"{year}-{month:02d}-01T00:00:00+00:00"
-        # Fast checkpoint: skip only if every variable currently requested is already present.
         existing = (
             sb.table("nora_observations")
             .select("variable_id", count="exact")
@@ -232,7 +189,6 @@ for year in range(START_YEAR, END_YEAR + 1):
             print(f"SKIP {observed_at[:7]}: sin bandas activas")
             continue
 
-        # One server-side zonal reduction per month, then one transfer to the runner.
         selected = image.select([band for _, band in active])
         reduced = selected.reduceRegions(
             collection=grid,
