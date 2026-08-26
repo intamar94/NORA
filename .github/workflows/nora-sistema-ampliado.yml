@@ -14,7 +14,7 @@ on:
       end_year:
         description: "Año final"
         required: true
-        default: "2024"
+        default: "2026"
       profile:
         description: "full = máximo panorama; core = variables principales"
         required: true
@@ -46,7 +46,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NORA_REGION_ID: ${{ inputs.region_id || 'alto_xingu' }}
           NORA_START_YEAR: ${{ inputs.start_year || '2001' }}
-          NORA_END_YEAR: ${{ inputs.end_year || '2024' }}
+          NORA_END_YEAR: ${{ inputs.end_year || '2026' }}
           NORA_PROFILE: ${{ inputs.profile || 'full' }}
         run: python ingesta_sistema_ampliado.py
 
