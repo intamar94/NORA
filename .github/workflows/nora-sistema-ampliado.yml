@@ -1,0 +1,55 @@
+name: NORA - Sistema Tierra ampliado
+
+on:
+  workflow_dispatch:
+    inputs:
+      region_id:
+        description: "Región registrada en Supabase"
+        required: true
+        default: "alto_xingu"
+      start_year:
+        description: "Año inicial"
+        required: true
+        default: "2001"
+      end_year:
+        description: "Año final"
+        required: true
+        default: "2024"
+      profile:
+        description: "full = máximo panorama; core = variables principales"
+        required: true
+        default: "full"
+  schedule:
+    - cron: "30 2 1 * *"
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install earthengine-api pandas numpy supabase
+
+      - name: Ejecutar ingesta ampliada
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+          GEE_PROJECT_ID: nora-506511
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NORA_REGION_ID: ${{ inputs.region_id || 'alto_xingu' }}
+          NORA_START_YEAR: ${{ inputs.start_year || '2001' }}
+          NORA_END_YEAR: ${{ inputs.end_year || '2024' }}
+          NORA_PROFILE: ${{ inputs.profile || 'full' }}
+        run: python ingesta_sistema_ampliado.py
+
+      - name: Resumen
+        if: success()
+        run: echo "NORA: ingesta multidominio completada para $NORA_REGION_ID"
