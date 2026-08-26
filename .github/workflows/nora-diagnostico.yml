@@ -23,3 +23,4 @@ jobs:
           test -f ingesta_sistema_ampliado.py
           python -m py_compile ingesta_sistema_ampliado.py
           echo "NORA workflow syntax and Python compilation OK"
+          echo "diagnostic-v2"
