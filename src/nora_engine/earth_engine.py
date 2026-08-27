@@ -52,15 +52,15 @@ def _roi(ee, region: dict):
     )
 
 
-def _mask_sentinel2(ee, image):
+def _mask_sentinel2(image):
     """Elimina sombra de nube, nubes, cirrus y nieve/hielo mediante SCL."""
     scl = image.select("SCL")
     valid = (
-        scl.neq(3)   # cloud shadow
-        .And(scl.neq(8))   # medium probability cloud
-        .And(scl.neq(9))   # high probability cloud
-        .And(scl.neq(10))  # cirrus
-        .And(scl.neq(11))  # snow/ice
+        scl.neq(3)
+        .And(scl.neq(8))
+        .And(scl.neq(9))
+        .And(scl.neq(10))
+        .And(scl.neq(11))
     )
     return image.updateMask(valid)
 
@@ -72,28 +72,32 @@ def _prepare_collection(ee, variable: str, meta: dict, inicio: str, fin: str, ro
         .filterBounds(roi)
     )
     if variable == "sentinel2":
-        col = col.map(lambda image: _mask_sentinel2(ee, image))
+        col = col.map(_mask_sentinel2)
     return col
 
 
-def _aggregate(ee, variable: str, meta: dict, col, roi):
+def _aggregate(ee, variable: str, meta: dict, col, roi, scale_m: int):
     band = meta["band"]
     if variable == "precipitacion":
-        # CHIRPS es diario (mm/d). Primero acumulamos en el tiempo y
-        # después calculamos la media espacial: mm acumulados en la región.
+        # CHIRPS es diario (mm/d): acumulación temporal y después
+        # media espacial = precipitación acumulada representativa de la ROI.
         image = col.select(band).sum()
     else:
         image = col.select(band).mean()
         if variable == "sentinel2":
-            # Sentinel-2 almacena reflectancia con escala 0.0001.
+            # Sentinel-2 SR almacena los valores con escala 0.0001.
             image = image.multiply(0.0001)
-    scale = config_scale = meta["escala_m"]
-    return image.clip(roi).reduceRegion(
-        reducer=ee.Reducer.mean(),
-        geometry=roi,
-        scale=scale,
-        maxPixels=1e8,
-    ).getInfo(), scale
+
+    return (
+        image.clip(roi)
+        .reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=roi,
+            scale=scale_m,
+            maxPixels=1e8,
+        )
+        .getInfo()
+    )
 
 
 def extraer(
@@ -113,6 +117,7 @@ def extraer(
             salida[variable] = {"estado": "no_soportada"}
             continue
 
+        scale_m = config.scale_m or meta["escala_m"]
         col = _prepare_collection(ee, variable, meta, inicio, fin, roi)
         count = int(col.size().getInfo())
         item = {
@@ -123,13 +128,13 @@ def extraer(
             "imagenes": count,
             "operacion_temporal": meta["operacion_temporal"],
             "estadistica_espacial": "mean",
-            "escala_m": config.scale_m or meta["escala_m"],
+            "escala_m": scale_m,
         }
 
         if count:
-            estadistica, escala = _aggregate(ee, variable, meta, col, roi)
-            item["estadistica"] = estadistica
-            item["escala_m"] = config.scale_m or escala
+            item["estadistica"] = _aggregate(
+                ee, variable, meta, col, roi, scale_m
+            )
 
         salida[variable] = item
 
