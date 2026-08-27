@@ -2,6 +2,8 @@ name: NORA - Earth Engine real data
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
     - cron: '17 2 * * *'
 
@@ -25,6 +27,10 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Validate NORA source
+        run: python -m compileall -q src scripts
+      - name: Verify NORA package import
+        run: python -c "from nora_engine.earth_engine import config_desde_entorno, extraer; print('NORA package import: OK')"
       - name: Authenticate to Google Cloud with OIDC
         uses: google-github-actions/auth@v3
         with:
@@ -35,8 +41,6 @@ jobs:
         env:
           EE_PROJECT: ${{ vars.EE_PROJECT }}
         run: test -n "$EE_PROJECT"
-      - name: Verify NORA package import
-        run: python -c "from nora_engine.earth_engine import config_desde_entorno, extraer; print('NORA package import: OK')"
       - name: Run real-data smoke test
         env:
           EE_PROJECT: ${{ vars.EE_PROJECT }}
