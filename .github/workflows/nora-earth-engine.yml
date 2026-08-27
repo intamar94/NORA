@@ -9,6 +9,9 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  PYTHONPATH: src
+
 jobs:
   earth-engine-smoke:
     runs-on: ubuntu-latest
@@ -32,6 +35,8 @@ jobs:
         env:
           EE_PROJECT: ${{ vars.EE_PROJECT }}
         run: test -n "$EE_PROJECT"
+      - name: Verify NORA package import
+        run: python -c "from nora_engine.earth_engine import config_desde_entorno, extraer; print('NORA package import: OK')"
       - name: Run real-data smoke test
         env:
           EE_PROJECT: ${{ vars.EE_PROJECT }}
