@@ -5,9 +5,14 @@ on:
   schedule:
     - cron: '17 2 * * *'
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   earth-engine-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,11 +22,17 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Verify Earth Engine configuration
+      - name: Authenticate to Google Cloud with OIDC
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+      - name: Verify configuration
         env:
-          EE_PROJECT: ${{ secrets.EE_PROJECT }}
+          EE_PROJECT: ${{ vars.EE_PROJECT }}
         run: test -n "$EE_PROJECT"
       - name: Run real-data smoke test
         env:
-          EE_PROJECT: ${{ secrets.EE_PROJECT }}
+          EE_PROJECT: ${{ vars.EE_PROJECT }}
         run: python scripts/prueba_earth_engine.py
