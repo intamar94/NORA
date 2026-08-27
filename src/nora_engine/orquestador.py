@@ -13,6 +13,9 @@ from .escenarios import simular, comparar
 from .evaluacion import evaluar as evaluar_escenario, ranking
 from .cascada_hazards import Senal, evaluar_cascada
 from .alertas import evaluar_alerta
+from .temporal import Observacion, analizar_evolucion
+from .geofisica import Celda, derivar_indicadores
+from .propagacion_espacial import Nodo, Enlace, propagar
 
 @dataclass
 class EstadoPipeline:
@@ -49,17 +52,19 @@ class Orquestador:
                 if h: hallazgos.append(h)
         hips=[generar_hipotesis(h) for h in hallazgos]; self._set("hipotesis",80,{"hallazgos":hallazgos,"hipotesis":hips}); return hallazgos,hips
     def evaluar_cascada(self, senales: list[Senal], cobertura=1.0, tendencia=0.0):
-        """Combina evidencia de cascada con decisión de alerta."""
-        self._set("riesgo_cascada",85)
-        cascada=evaluar_cascada(senales,cobertura)
+        self._set("riesgo_cascada",85); cascada=evaluar_cascada(senales,cobertura)
         alerta_senales=[]
         for s in senales:
             evidencia=max(0.0,min(1.0,(s.valor/s.umbral)-1.0)) if s.umbral>0 else 0.0
             alerta_senales.append({"variable":s.variable,"evidencia":evidencia,"fuente":s.fuente})
         alerta=evaluar_alerta(alerta_senales,tendencia,cobertura)
-        resultado={"cascada":cascada,"alerta":alerta}
-        self._set("alerta",88,resultado); return resultado
+        resultado={"cascada":cascada,"alerta":alerta}; self._set("alerta",88,resultado); return resultado
+    def evaluar_tiempo(self, observaciones: list[Observacion]):
+        self._set("temporal",90); resultado=analizar_evolucion(observaciones); self._set("temporal",92,resultado); return resultado
+    def evaluar_geografia(self, celdas: list[Celda], nodos: list[Nodo], enlaces: list[Enlace], origen: str, horizonte_h: float | None=None):
+        self._set("geografia",94); terreno=derivar_indicadores(celdas); exposicion=propagar(nodos,enlaces,origen,horizonte_h)
+        resultado={"terreno":terreno,"exposicion":exposicion}; self._set("geografia",96,resultado); return resultado
     def escenarios(self, linea_base, hipotesis, cambios):
-        self._set("escenarios",90); esc=[simular(linea_base,cambios.get(h["id"],{}),h["id"]) for h in hipotesis]
+        self._set("escenarios",97); esc=[simular(linea_base,cambios.get(h["id"],{}),h["id"]) for h in hipotesis]
         comp=comparar(linea_base,esc); evals=[evaluar_escenario(e) for e in esc]; orden=ranking(evals)
         self._set("escenarios",100,{"escenarios":esc,"comparacion":comp,"ranking":orden}); self.estado.estado="listo"; self.estado.etapa="completado"; return self.estado
