@@ -2,8 +2,6 @@ name: NORA - Earth Engine real data
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
   schedule:
     - cron: '17 2 * * *'
 
