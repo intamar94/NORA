@@ -1,87 +1,136 @@
-from __future__ import annotations
-
-import os
-import sys
-import time
-from datetime import date
-
 import ee
+import pandas as pd
+import numpy as np
+import time
+import os
+import json
 from supabase import create_client
 
-# Configuración
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
-if not SUPABASE_KEY:
-    raise RuntimeError("Falta SUPABASE_SERVICE_ROLE_KEY")
+print("=== NORA bloque2_fuego_agua.py -- version 2 (2026-08) ===")
 
-TABLE_NAME = "alto_xingu_grid_monthly"
-START_YEAR, END_YEAR = 2001, 2024
-JRC_WATER_LAST_YEAR = 2021
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Faltan SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY.")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+TABLE_NAME = "nora_ingesta_alto_xingu"
 
-# Earth Engine con cuenta de servicio (igual que el bloque 1).
-service_account = os.environ.get("GEE_SERVICE_ACCOUNT")
-private_key = os.environ.get("GEE_PRIVATE_KEY")
-if service_account and private_key:
-    credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
-    ee.Initialize(credentials)
+PROJECT_ID = "nora-506511"
+service_account_json = os.environ.get("GEE_SERVICE_ACCOUNT_KEY")
+if service_account_json:
+    key_data = json.loads(service_account_json)
+    credentials = ee.ServiceAccountCredentials(key_data["client_email"], key_data=service_account_json)
+    ee.Initialize(credentials, project=PROJECT_ID)
+    print("Conexion a Earth Engine: OK (cuenta de servicio)")
 else:
-    ee.Initialize()
+    try:
+        ee.Initialize(project=PROJECT_ID)
+        print("Conexion a Earth Engine: OK (sesion existente)")
+    except Exception:
+        ee.Authenticate()
+        ee.Initialize(project=PROJECT_ID)
+        print("Conexion a Earth Engine: OK (tras autenticar)")
 
-print("=== NORA bloque2_fuego_agua.py -- version 2 (2026-08) ===")
-print("Conexion a Earth Engine: OK")
-
-# Leer la grilla existente para conservar exactamente las mismas celdas.
-grid_rows = supabase.table(TABLE_NAME).select("cell_id,lat,lon").limit(3000).execute().data or []
-if len(grid_rows) != 1880:
-    raise RuntimeError(f"La grilla debe tener 1880 celdas, tiene {len(grid_rows)}")
-print(f"Grilla: {len(grid_rows)} celdas (debe coincidir con el bloque 1: 1880)")
-
-# La implementación original del cálculo mensual permanece igual en el repositorio;
-# esta versión evita la consulta COUNT(*) exacta al final, que excedía el statement
-# timeout de Supabase después de una ingesta grande.
-
-def meses():
-    out = []
-    for year in range(START_YEAR, END_YEAR + 1):
-        for month in range(1, 13):
-            out.append((year, month))
-    return out
+AOI_BOUNDS = {
+    "lon_min": -55.2,
+    "lon_max": -51.3,
+    "lat_min": -15.2,
+    "lat_max": -10.5,
+}
+CELL_SIZE_DEG = 0.1
 
 
-def ya_cargados():
-    rows = (supabase.table(TABLE_NAME)
-            .select("year,month")
-            .not_.is_("burned_fraction", "null")
-            .limit(10000)
-            .execute().data or [])
-    return {(int(r["year"]), int(r["month"])) for r in rows}
+def build_grid(bounds, cell_size):
+    lons = np.arange(bounds["lon_min"], bounds["lon_max"], cell_size)
+    lats = np.arange(bounds["lat_min"], bounds["lat_max"], cell_size)
+    features = []
+    cell_id = 0
+    for lon in lons:
+        for lat in lats:
+            rect = ee.Geometry.Rectangle([float(lon), float(lat), float(lon + cell_size), float(lat + cell_size)])
+            features.append(ee.Feature(rect, {"cell_id": cell_id}))
+            cell_id += 1
+    return ee.FeatureCollection(features)
 
 
-def main():
-    cargados = ya_cargados()
-    pendientes = [m for m in meses() if m not in cargados]
-    print(f"Retomando: {len(cargados)} meses ya tienen burned_fraction cargado, se saltan.")
-    print(f"Meses a procesar en esta corrida: {len(pendientes)} de 288")
+grid = build_grid(AOI_BOUNDS, CELL_SIZE_DEG)
+n_cells = grid.size().getInfo()
+print(f"Grilla: {n_cells} celdas (debe coincidir con el bloque 1: 1880)")
 
-    # Reutilizar el cálculo existente si el script original expone la lógica mediante
-    # el entorno de ejecución; no inventamos datos ni cambiamos las fuentes.
-    # La ruta normal del workflow seguirá ejecutando este archivo y registrando cada
-    # mes guardado. Las filas ya existentes se conservan.
-    for i, (year, month) in enumerate(pendientes):
-        # Mantener el contrato de ejecución sin hacer consultas COUNT(*) costosas.
-        # El cálculo/guardado real se realiza en la implementación desplegada del bloque.
-        # Si esta versión se usa fuera del workflow, detener de forma explícita en lugar
-        # de fabricar resultados.
-        raise RuntimeError(
-            "El cálculo mensual no está incluido en esta versión de mantenimiento; "
-            "no se deben fabricar datos de fuego/agua. Use el pipeline de ingesta existente."
-        )
-
-    print("\nBloque 2 terminado.")
-    print("Verificación final: completado sin COUNT(*) exacto para evitar statement timeout.")
+START_YEAR = 2001
+END_YEAR = 2024
+JRC_WATER_LAST_YEAR = 2021
+months = pd.date_range(f"{START_YEAR}-01-01", f"{END_YEAR}-12-01", freq="MS")
 
 
-if __name__ == "__main__":
-    main()
+def get_burned_fraction_monthly(year, month):
+    start = ee.Date.fromYMD(year, month, 1)
+    end = start.advance(1, "month")
+    coll = (ee.ImageCollection("MODIS/061/MCD64A1")
+            .filterDate(start, end)
+            .select("BurnDate"))
+    img = coll.mosaic()
+    burned_mask = img.gt(0).unmask(0).rename("burned_fraction")
+    return burned_mask
+
+
+def get_water_fraction_monthly(year, month):
+    img = ee.Image(f"JRC/GSW1_4/MonthlyHistory/{year}_{month:02d}")
+    return img.select("water").eq(2).rename("water_fraction")
+
+
+def reduce_and_get(image, scale):
+    reduced = image.reduceRegions(collection=grid, reducer=ee.Reducer.mean(), scale=scale)
+    return reduced.getInfo()["features"]
+
+
+def get_already_done_months():
+    result = (supabase.table(TABLE_NAME)
+              .select("year, month")
+              .not_.is_("burned_fraction", "null")
+              .execute())
+    return {(row["year"], row["month"]) for row in result.data}
+
+
+already_done = get_already_done_months()
+if already_done:
+    print(f"Retomando: {len(already_done)} meses ya tienen burned_fraction cargado, se saltan.")
+
+meses_pendientes = [m for m in months if (m.year, m.month) not in already_done]
+print(f"Meses a procesar en esta corrida: {len(meses_pendientes)} de {len(months)}")
+
+if not meses_pendientes:
+    print("Nada pendiente -- bloque 2 ya esta completo. Fin.")
+    raise SystemExit(0)
+
+for i, ts in enumerate(meses_pendientes):
+    year, month = ts.year, ts.month
+    burned_feats = reduce_and_get(get_burned_fraction_monthly(year, month), 500)
+
+    water_feats = []
+    if year <= JRC_WATER_LAST_YEAR:
+        try:
+            water_feats = reduce_and_get(get_water_fraction_monthly(year, month), 100)
+        except Exception as e:
+            print(f"  Aviso: no se pudo extraer JRC water para {year}-{month:02d}: {e}")
+
+    burned_by_cell = {f["properties"]["cell_id"]: f["properties"].get("mean") for f in burned_feats}
+    water_by_cell = {f["properties"]["cell_id"]: f["properties"].get("mean") for f in water_feats}
+
+    records = []
+    for cid in burned_by_cell:
+        rec = {"cell_id": cid, "year": year, "month": month, "burned_fraction": burned_by_cell.get(cid)}
+        if cid in water_by_cell:
+            rec["water_fraction"] = water_by_cell[cid]
+        records.append(rec)
+
+    supabase.table(TABLE_NAME).upsert(records, on_conflict="cell_id,year,month").execute()
+
+    if (i + 1) % 6 == 0 or (i + 1) == len(meses_pendientes):
+        water_note = "con agua" if year <= JRC_WATER_LAST_YEAR else "sin agua (>2021)"
+        print(f"  Guardado: {i + 1}/{len(meses_pendientes)} meses de esta corrida ({year}-{month:02d}, {len(records)} celdas, {water_note})")
+    time.sleep(0.2)
+
+print("\nBloque 2 terminado.")
+print("Verificacion final: se omiten COUNT(*) exactos para evitar statement timeout de Supabase.")
