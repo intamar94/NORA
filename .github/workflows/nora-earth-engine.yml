@@ -1,0 +1,27 @@
+name: NORA - Earth Engine real data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * *'
+
+jobs:
+  earth-engine-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify Earth Engine configuration
+        env:
+          EE_PROJECT: ${{ secrets.EE_PROJECT }}
+        run: test -n "$EE_PROJECT"
+      - name: Run real-data smoke test
+        env:
+          EE_PROJECT: ${{ secrets.EE_PROJECT }}
+        run: python scripts/prueba_earth_engine.py
