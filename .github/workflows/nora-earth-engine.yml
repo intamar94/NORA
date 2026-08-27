@@ -1,9 +1,6 @@
 name: NORA - Earth Engine real data
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '17 2 * * *'
+on: workflow_dispatch
 
 permissions:
   contents: read
