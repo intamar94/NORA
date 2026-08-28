@@ -2,12 +2,15 @@ name: NORA - Quality to Discovery
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'quality_check_nora.py'
-      - 'motor_descubrimiento.py'
-      - '.github/workflows/nora-pipeline.yml'
+    inputs:
+      region_id:
+        description: "Región a analizar"
+        required: true
+        default: "alto_xingu"
+      max_lag:
+        description: "Máximo desfase temporal en meses"
+        required: true
+        default: "6"
 
 permissions:
   contents: read
@@ -15,39 +18,65 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     outputs:
       approved: ${{ steps.gate.outputs.approved }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run Quality Gate
         id: gate
         env:
-          SUPABASE_URL: ${{ vars.NORA_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.NORA_SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NORA_DATA_SOURCE: nora_data_ingest
+          NORA_REGION_ID: ${{ inputs.region_id }}
         run: |
+          set -euo pipefail
           python quality_check_nora.py
+          test -s nora_quality_report.json
+          python - <<'PY'
+          import json
+          with open('nora_quality_report.json', encoding='utf-8') as f:
+              report = json.load(f)
+          if report.get('status') != 'PASS':
+              raise SystemExit(f"Quality Gate FAIL: {report.get('failures')}")
+          print('Quality Gate PASS')
+          PY
           echo "approved=true" >> "$GITHUB_OUTPUT"
+      - name: Publish quality report
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-quality-${{ inputs.region_id }}
+          path: nora_quality_report.json
 
   discovery:
     needs: quality
     if: needs.quality.outputs.approved == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run Discovery
         env:
-          SUPABASE_URL: ${{ vars.NORA_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.NORA_SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NORA_DATA_SOURCE: nora_data_ingest
+          NORA_REGION_ID: ${{ inputs.region_id }}
+          NORA_MAX_LAG: ${{ inputs.max_lag }}
+          NORA_OUTPUT: nora_discoveries.json
         run: python motor_descubrimiento.py
+      - name: Publish discovery results
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-discoveries-${{ inputs.region_id }}
+          path: nora_discoveries.json
