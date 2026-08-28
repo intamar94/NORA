@@ -8,27 +8,30 @@ on:
         required: true
         default: "alto_xingu"
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Clonar repositorio
+      - name: Checkout
         uses: actions/checkout@v4
-      - name: Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Instalar dependencias
-        run: pip install pandas supabase
-      - name: Ejecutar control de calidad
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run quality gate
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NORA_REGION_ID: ${{ inputs.region_id }}
           NORA_DATA_SOURCE: nora_data_ingest
         run: python quality_check_nora.py
-      - name: Publicar informe
+      - name: Publish report
         uses: actions/upload-artifact@v4
         with:
           name: nora-quality-${{ inputs.region_id }}
