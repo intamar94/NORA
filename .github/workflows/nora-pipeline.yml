@@ -1,0 +1,53 @@
+name: NORA - Quality to Discovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'quality_check_nora.py'
+      - 'motor_descubrimiento.py'
+      - '.github/workflows/nora-pipeline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      approved: ${{ steps.gate.outputs.approved }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Quality Gate
+        id: gate
+        env:
+          SUPABASE_URL: ${{ vars.NORA_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.NORA_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python quality_check_nora.py
+          echo "approved=true" >> "$GITHUB_OUTPUT"
+
+  discovery:
+    needs: quality
+    if: needs.quality.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Discovery
+        env:
+          SUPABASE_URL: ${{ vars.NORA_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.NORA_SUPABASE_SERVICE_ROLE_KEY }}
+        run: python motor_descubrimiento.py
