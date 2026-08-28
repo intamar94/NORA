@@ -1,0 +1,35 @@
+name: NORA - Quality Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      region_id:
+        description: "Región a validar"
+        required: true
+        default: "alto_xingu"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Instalar dependencias
+        run: pip install pandas supabase
+      - name: Ejecutar control de calidad
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NORA_REGION_ID: ${{ inputs.region_id }}
+          NORA_DATA_SOURCE: nora_data_ingest
+        run: python quality_check_nora.py
+      - name: Publicar informe
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-quality-${{ inputs.region_id }}
+          path: nora_quality_report.json
