@@ -6,6 +6,7 @@ exploratorios y nunca se presentan como causalidad.
 """
 import json
 import os
+import re
 from itertools import combinations
 import numpy as np
 import pandas as pd
@@ -23,26 +24,52 @@ sb = create_client(URL, KEY)
 VARIABLES = ["ndvi", "precip_mm", "temp_c", "cloud_fraction", "cloud_top_height_m", "cloud_optical_depth", "evapotranspiration_mm", "potential_evapotranspiration_mm", "runoff_mm", "surface_runoff_mm", "subsurface_runoff_mm", "soil_moisture_surface", "soil_moisture_rootzone", "lst_day_c", "lst_night_c", "lai", "fpar", "vpd_kpa", "wind_speed_ms", "surface_radiation_wm2", "surface_pressure_pa", "burned_fraction", "water_fraction", "co_mol_m2", "no2_mol_m2", "ch4_mol_m2", "aerosol_index", "gpp", "evi", "gpm_precip_mm", "smap_surface_soil_moisture", "smap_rootzone_soil_moisture"]
 STATIC = ["clay_0_5cm_mean", "sand_0_5cm_mean", "soc_0_5cm_mean", "phh2o_0_5cm_mean"]
 
+
 def fetch_all(columns, batch_size=5000):
-    rows, start = [], 0
+    """Fetch paginado y tolerante a columnas opcionales ausentes.
+
+    El esquema de nora_data_ingest evoluciona por bloques. Si una columna
+    opcional todavía no existe, PostgREST devuelve 42703; se elimina solo
+    esa columna y se reintenta. Otros errores se propagan sin ocultarlos.
+    """
+    requested = list(dict.fromkeys(columns))
     while True:
-        r = (sb.table(BASE_TABLE).select(columns).order("cell_id").order("year").order("month").range(start, start + batch_size - 1).execute())
-        batch = r.data or []
-        rows.extend(batch)
-        if len(batch) < batch_size:
-            break
-        start += batch_size
-    return rows
+        try:
+            rows, start = [], 0
+            while True:
+                r = (sb.table(BASE_TABLE).select(",".join(requested))
+                     .order("cell_id").order("year").order("month")
+                     .range(start, start + batch_size - 1).execute())
+                batch = r.data or []
+                rows.extend(batch)
+                if len(batch) < batch_size:
+                    return rows, requested
+                start += batch_size
+        except Exception as exc:
+            message = str(exc)
+            if "42703" not in message:
+                raise
+            match = re.search(r"column [^.]+\.([A-Za-z_][A-Za-z0-9_]*) does not exist", message)
+            if not match:
+                raise
+            missing = match.group(1)
+            if missing not in requested:
+                raise
+            requested.remove(missing)
+            print(f"Discovery: columna opcional ausente en {BASE_TABLE}: {missing}; se excluye del análisis.")
+            if not requested:
+                raise RuntimeError(f"No quedan columnas utilizables en {BASE_TABLE}") from exc
+
 
 columns = ["cell_id", "year", "month"] + VARIABLES + STATIC
-rows = fetch_all(",".join(columns))
+rows, selected_columns = fetch_all(columns)
 if not rows:
     raise RuntimeError(f"No hay datos en {BASE_TABLE}")
 
 df = pd.DataFrame(rows)
 df["observed_at"] = pd.to_datetime(dict(year=df.year, month=df.month, day=1))
 df = df.sort_values(["cell_id", "observed_at"])
-available = [c for c in VARIABLES if c in df.columns and df[c].notna().sum() >= MIN_POINTS]
+available = [c for c in VARIABLES if c in selected_columns and c in df.columns and df[c].notna().sum() >= MIN_POINTS]
 dynamic = [c for c in available if df.groupby("cell_id")[c].std().fillna(0).gt(1e-12).sum() > 0]
 
 pairs = []
@@ -70,7 +97,7 @@ if "ndvi" in dynamic and "precip_mm" in dynamic:
     sens = pd.DataFrame(lag_records, columns=["cell_id", "lag", "rain_ndvi_r"])
     if not sens.empty:
         best_idx = sens.groupby("cell_id")["rain_ndvi_r"].apply(lambda s: s.abs().idxmax())
-        best = sens.loc[best_idx].copy(); soil_cols = [c for c in STATIC if c in df.columns]
+        best = sens.loc[best_idx].copy(); soil_cols = [c for c in STATIC if c in selected_columns and c in df.columns]
         if soil_cols:
             soil = df.groupby("cell_id")[soil_cols].first().reset_index(); best = best.merge(soil, on="cell_id", how="left")
             for col in soil_cols:
@@ -90,7 +117,7 @@ for p in pairs[:30]:
     direction = "positiva" if p["mean_within_cell_r"] > 0 else "negativa"
     hypotheses.append({"statement": f"{p['a']} presenta relación {direction} con {p['b']} con un desfase de {p['lag_months']} meses", "evidence": p, "status": "exploratoria", "causality": "no_determinada"})
 
-result = {"region": REGION, "source_table": BASE_TABLE, "period_start": str(df.observed_at.min().date()), "period_end": str(df.observed_at.max().date()), "cells": int(df.cell_id.nunique()), "rows": int(len(df)), "dynamic_variables": dynamic, "static_soil_variables": [c for c in STATIC if c in df.columns], "top_relations": pairs[:100], "soil_effects": soil_effects, "anomaly_summary": anomaly_summary, "hypotheses": hypotheses, "method": "Within-cell Pearson lag correlations, best-lag NDVI/precipitation sensitivity, static-soil moderation and robust MAD anomalies; exploratory only."}
+result = {"region": REGION, "source_table": BASE_TABLE, "period_start": str(df.observed_at.min().date()), "period_end": str(df.observed_at.max().date()), "cells": int(df.cell_id.nunique()), "rows": int(len(df)), "selected_columns": selected_columns, "dynamic_variables": dynamic, "static_soil_variables": [c for c in STATIC if c in selected_columns and c in df.columns], "top_relations": pairs[:100], "soil_effects": soil_effects, "anomaly_summary": anomaly_summary, "hypotheses": hypotheses, "method": "Within-cell Pearson lag correlations, best-lag NDVI/precipitation sensitivity, static-soil moderation and robust MAD anomalies; exploratory only."}
 with open(OUT, "w", encoding="utf-8") as fh: json.dump(result, fh, ensure_ascii=False, indent=2)
 print(f"NORA Discovery: {len(dynamic)} dynamic variables, {len(df)} rows, {len(pairs)} lagged relations")
 print(f"Top relation: {pairs[0] if pairs else 'none'}")
