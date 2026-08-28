@@ -1,12 +1,16 @@
 name: Ingesta Completa Alto Xingu
 
 on:
-  # Disparo manual desde Actions
   workflow_dispatch: {}
-  # Red de seguridad: si se corta por timeout (6h en privados), relanza cada 3h
-  # Gracias al checkpoint, retoma sin duplicar datos
   schedule:
-    - cron: "0 */3 * * *"
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nora-ingesta-alto-xingu
+  cancel-in-progress: false
 
 jobs:
   ingesta_completa:
@@ -25,6 +29,22 @@ jobs:
         run: |
           pip install earthengine-api pandas numpy supabase
 
+      - name: Verificar credencial Earth Engine
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os
+          key = os.environ.get("GEE_SERVICE_ACCOUNT_KEY")
+          if not key:
+              raise SystemExit("Falta GEE_SERVICE_ACCOUNT_KEY: no se permite autenticación interactiva en automatización.")
+          data = json.loads(key)
+          for field in ("client_email", "private_key", "project_id"):
+              if not data.get(field):
+                  raise SystemExit(f"Credencial GEE inválida: falta {field}.")
+          print("Credencial Earth Engine: estructura válida")
+          PY
+
       - name: Ejecutar ingesta completa (2001-2024, ~1.880 celdas)
         env:
           GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
@@ -32,16 +52,33 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python ingesta_alto_xingu.py
 
+      - name: Control de calidad estricto
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NORA_REGION_ID: alto_xingu
+          NORA_DATA_SOURCE: nora_ingesta_alto_xingu
+          NORA_EXPECTED_CELLS: "1880"
+          NORA_START_YEAR: "2001"
+          NORA_END_YEAR: "2024"
+        run: python quality_check_nora.py
+
+      - name: Publicar informe de calidad
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-quality-alto-xingu
+          path: nora_quality_report.json
+
       - name: Resumen éxito
         if: success()
         run: |
-          echo "✅ Ingesta completada exitosamente"
-          echo "Los datos están guardados en Supabase (tabla: nora_ingesta_alto_xingu)"
-          echo "Si se ejecutó de nuevo, se retomó desde donde quedó sin duplicar filas."
+          echo "Ingesta y quality gate completados correctamente."
+          echo "Datos: Supabase nora_ingesta_alto_xingu"
+          echo "El checkpoint permite reanudar sin duplicar filas."
 
-      - name: Notificación de fallo
+      - name: Diagnóstico de fallo
         if: failure()
         run: |
-          echo "❌ La ingesta falló. Revisa el log arriba."
-          echo "Próxima ejecución automática en 3 horas (si está programado)."
-          exit 1
+          echo "NORA quedó detenido de forma segura: ingesta o quality gate falló."
+          echo "No se ejecuta downstream discovery tras un fallo de calidad."
