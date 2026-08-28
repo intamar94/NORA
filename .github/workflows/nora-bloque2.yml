@@ -2,8 +2,13 @@ name: Bloque 2 - Fuego y Agua Alto Xingu
 
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: "0 */3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nora-alto-xingu-ingest
+  cancel-in-progress: false
 
 jobs:
   bloque2:
@@ -20,6 +25,22 @@ jobs:
 
       - name: Instalar dependencias
         run: pip install earthengine-api pandas numpy supabase
+
+      - name: Verificar credencial Earth Engine
+        env:
+          GEE_SERVICE_ACCOUNT_KEY: ${{ secrets.GEE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os
+          key = os.environ.get("GEE_SERVICE_ACCOUNT_KEY")
+          if not key:
+              raise SystemExit("Falta GEE_SERVICE_ACCOUNT_KEY: no se permite autenticación interactiva en automatización.")
+          data = json.loads(key)
+          for field in ("client_email", "private_key", "project_id"):
+              if not data.get(field):
+                  raise SystemExit(f"Credencial GEE inválida: falta {field}.")
+          print("Credencial Earth Engine: estructura válida")
+          PY
 
       - name: Ejecutar bloque 2 (fuego + agua)
         env:
