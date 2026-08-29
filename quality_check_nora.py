@@ -1,4 +1,10 @@
-"""NORA strict data-quality gate for Alto Xingu."""
+"""NORA strict data-quality gate for Alto Xingu.
+
+The Supabase REST API may cap a response at 1,000 rows. The gate therefore
+paginates explicitly and never treats a short page as end-of-dataset unless
+it is smaller than the API page size. This prevents a truncated audit from
+being mistaken for the complete scientific universe.
+"""
 import json, os, sys
 import pandas as pd
 from supabase import create_client
@@ -11,19 +17,28 @@ sb=create_client(URL,KEY)
 required=["cell_id","year","month","centroid_lon","centroid_lat"]
 scientific=["ndvi","precip_mm","temp_c","burned_fraction","water_fraction"]
 select_cols=",".join(required+scientific)
-rows=[]; start=0; batch=5000
+
+# Supabase/PostgREST commonly caps a response at 1,000 rows. Always advance
+# by the requested page size when a full page is returned; only a genuinely
+# short page proves that the dataset has ended.
+rows=[]; start=0; page_size=1000
 while True:
-    data=(sb.table(TABLE).select(select_cols).order("cell_id").order("year").order("month").range(start,start+batch-1).execute().data or [])
+    data=(sb.table(TABLE).select(select_cols)
+          .order("cell_id").order("year").order("month")
+          .range(start,start+page_size-1).execute().data or [])
     rows.extend(data)
-    if len(data)<batch: break
-    start+=batch
+    print(f"Calidad: pagina start={start} rows={len(data)} total={len(rows)}")
+    if len(data)<page_size: break
+    start+=page_size
+
 if not rows: raise RuntimeError(f"Fuente vacia: {TABLE}")
 df=pd.DataFrame(rows)
 for c in required:
     if c not in df.columns: raise RuntimeError(f"Falta columna obligatoria: {c}")
 for c in required+scientific: df[c]=pd.to_numeric(df[c],errors="coerce")
+expected_rows=EXPECTED_CELLS*(END_YEAR-START_YEAR+1)*12
 checks={
- "rows":len(df),"cells":int(df.cell_id.nunique()),"expected_cells":EXPECTED_CELLS,
+ "rows":len(df),"expected_rows":expected_rows,"cells":int(df.cell_id.nunique()),"expected_cells":EXPECTED_CELLS,
  "period_start":int(df.year.min()),"period_end":int(df.year.max()),
  "distinct_year_month":int(df[["year","month"]].drop_duplicates().shape[0]),"expected_year_month":(END_YEAR-START_YEAR+1)*12,
  "null_keys":int(df[required].isna().any(axis=1).sum()),"invalid_month":int((~df.month.between(1,12)).sum()),
@@ -35,6 +50,7 @@ range_failures={c:int((df[c].notna() & ~df[c].between(lo,hi)).sum()) for c,(lo,h
 failures=[]
 for k in ("null_keys","invalid_month","invalid_year","duplicate_cell_month","invalid_lon","invalid_lat"):
     if checks[k]: failures.append(k)
+if checks["rows"]!=expected_rows: failures.append("row_coverage")
 if checks["cells"]!=EXPECTED_CELLS: failures.append("cell_coverage")
 if checks["period_start"]!=START_YEAR or checks["period_end"]!=END_YEAR: failures.append("year_coverage")
 if checks["distinct_year_month"]!=checks["expected_year_month"]: failures.append("month_coverage")
@@ -45,7 +61,8 @@ for c in ("ndvi","precip_mm","temp_c","burned_fraction"):
 pre=df[df.year<=2021]; post=df[df.year>2021]
 checks["water_null_rate_pre_2022"]=round(float(pre.water_fraction.isna().mean()),6) if len(pre) else None
 checks["water_null_rate_post_2021"]=round(float(post.water_fraction.isna().mean()),6) if len(post) else None
-# JRC monthly water history currently used by NORA ends in 2021; post-2021 nulls are expected and never imputed.
+# JRC monthly water history currently used by NORA ends in 2021; post-2021
+# nulls are expected and are never imputed.
 if len(pre) and checks["water_null_rate_pre_2022"]>.20: failures.append("null_rate:water_fraction_pre_2022")
 result={"region":REGION,"source":TABLE,"status":"PASS" if not failures else "FAIL","checks":checks,"failures":failures,"policy":"No imputation; unsupported or missing source data remains missing and blocks downstream use where required."}
 with open("nora_quality_report.json","w",encoding="utf-8") as f: json.dump(result,f,ensure_ascii=False,indent=2)
